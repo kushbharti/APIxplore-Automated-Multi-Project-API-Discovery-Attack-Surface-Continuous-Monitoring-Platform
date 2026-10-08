@@ -1,9 +1,12 @@
 pipeline {
     agent any
+
     options {
         timestamps()
     }
+
     stages {
+
         stage('Environment Check') {
             steps {
                 echo 'Checking Jenkins environment...'
@@ -12,38 +15,38 @@ pipeline {
                 bat 'git --version'
             }
         }
-        stage('Checkout') {
-            steps {
-                echo 'Checking out APIxplore source code...'
 
-                checkout scm
-            }
-        }
-        stage('Create Python Environment') {
+        stage('Create Virtual Environment') {
             steps {
-                echo 'Creating CI Python environment...'
+                echo 'Creating Python virtual environment...'
 
                 bat 'python -m venv .jenkins-venv'
+
+                bat '.jenkins-venv\\Scripts\\python.exe --version'
             }
         }
+
         stage('Install Dependencies') {
             steps {
-                echo 'Installing APIxplore backend dependencies...'
+                echo 'Installing dependencies inside Jenkins virtual environment...'
 
                 bat '.jenkins-venv\\Scripts\\python.exe -m pip install --upgrade pip'
 
                 bat '.jenkins-venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt'
             }
         }
+
         stage('Automated Testing') {
             steps {
-                echo 'Running Pytest...'
+                echo 'Running Pytest inside Jenkins virtual environment...'
 
                 bat '.jenkins-venv\\Scripts\\python.exe -m pytest -v backend\\test_simple.py --cov-fail-under=0'
             }
         }
     }
+
     post {
+
         success {
             echo 'APIxplore CI pipeline completed successfully.'
         }
