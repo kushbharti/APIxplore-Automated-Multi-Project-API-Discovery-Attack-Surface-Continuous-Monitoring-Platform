@@ -47,12 +47,12 @@ pipeline {
         }
 
         stage('Automated Testing') {
-            steps {
-                echo 'Running APIxplore automated tests...'
+    steps {
+        echo 'Running APIxplore automated tests...'
 
-                bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py'
-            }
-        }
+        bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --no-cov'
+    }
+}
     }
 
     post {
