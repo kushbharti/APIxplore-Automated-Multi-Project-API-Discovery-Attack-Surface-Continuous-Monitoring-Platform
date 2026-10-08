@@ -5,48 +5,57 @@ pipeline {
         timestamps()
     }
 
+    environment {
+        PYTHON = 'C:\\Users\\Kush Bharti\\AppData\\Local\\Programs\\Python\\Python312\\python.exe'
+        VENV = '.jenkins-venv'
+        BACKEND = 'backend'
+        REQUIREMENTS = 'backend\\requirements.txt'
+    }
+
     stages {
 
         stage('Environment Check') {
             steps {
                 echo 'Checking Jenkins environment...'
 
-                bat 'python --version'
+                bat '"%PYTHON%" --version'
                 bat 'git --version'
             }
         }
 
         stage('Create Virtual Environment') {
             steps {
-                echo 'Creating Python virtual environment...'
+                echo 'Creating isolated Python virtual environment...'
 
-                bat 'python -m venv .jenkins-venv'
+                bat 'if exist "%VENV%" rmdir /s /q "%VENV%"'
 
-                bat '.jenkins-venv\\Scripts\\python.exe --version'
+                bat '"%PYTHON%" -m venv "%VENV%"'
+
+                bat '"%VENV%\\Scripts\\python.exe" --version'
+                bat '"%VENV%\\Scripts\\python.exe" -m pip --version'
             }
         }
 
         stage('Install Dependencies') {
             steps {
-                echo 'Installing dependencies inside Jenkins virtual environment...'
+                echo 'Installing APIxplore dependencies...'
 
-                bat '.jenkins-venv\\Scripts\\python.exe -m pip install --upgrade pip'
+                bat '"%VENV%\\Scripts\\python.exe" -m pip install --upgrade pip'
 
-                bat '.jenkins-venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt'
+                bat '"%VENV%\\Scripts\\python.exe" -m pip install -r "%REQUIREMENTS%"'
             }
         }
 
         stage('Automated Testing') {
             steps {
-                echo 'Running Pytest inside Jenkins virtual environment...'
+                echo 'Running APIxplore automated tests...'
 
-                bat '.jenkins-venv\\Scripts\\python.exe -m pytest -v backend\\test_simple.py --cov-fail-under=0'
+                bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --cov-fail-under=0'
             }
         }
     }
 
     post {
-
         success {
             echo 'APIxplore CI pipeline completed successfully.'
         }
