@@ -50,7 +50,7 @@ pipeline {
             steps {
                 echo 'Running APIxplore automated tests...'
 
-                bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --cov-fail-under=0'
+                bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py'
             }
         }
     }
