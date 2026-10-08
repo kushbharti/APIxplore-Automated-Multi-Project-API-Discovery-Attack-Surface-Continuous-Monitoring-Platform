@@ -47,12 +47,32 @@ pipeline {
         }
 
         stage('Automated Testing') {
-    steps {
-        echo 'Running APIxplore automated tests...'
+            steps {
+                echo 'Running APIxplore automated tests...'
 
-        bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --no-cov'
-    }
-}
+                bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --no-cov'
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                echo 'Running SonarQube static code analysis...'
+
+                script {
+                    def scannerHome = tool 'SonarScanner'
+
+                    withSonarQubeEnv('SonarQube') {
+                        bat """
+                            "${scannerHome}\\bin\\sonar-scanner.bat" ^
+                            -Dsonar.projectKey=APIxplore ^
+                            -Dsonar.projectName=APIxplore ^
+                            -Dsonar.sources=backend\\app ^
+                            -Dsonar.tests=backend\\tests ^
+                            -Dsonar.sourceEncoding=UTF-8
+                        """
+                    }
+                }
+            }
+        }
     }
 
     post {
