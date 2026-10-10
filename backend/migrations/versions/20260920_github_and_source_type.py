@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = '20260920_github_and_source_type'
+revision: str = '20260920_github_source'
 down_revision: str | None = '6fe2ed0aaa0b'
 branch_labels: str | None = None
 depends_on: str | None = None

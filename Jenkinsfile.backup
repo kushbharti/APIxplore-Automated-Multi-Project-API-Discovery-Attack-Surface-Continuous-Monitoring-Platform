@@ -10,7 +10,6 @@ pipeline {
         VENV = '.jenkins-venv'
         BACKEND = 'backend'
         REQUIREMENTS = 'backend\\requirements.txt'
-        KUBECONFIG = 'C:\\ProgramData\\Jenkins\\.jenkins\\kubeconfig'
     }
 
     stages {
@@ -54,7 +53,6 @@ pipeline {
                 bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --no-cov'
             }
         }
-
         stage('SonarQube Analysis') {
             steps {
                 echo 'Running SonarQube static code analysis...'
@@ -75,85 +73,15 @@ pipeline {
                 }
             }
         }
-
         stage('Quality Gate') {
-            steps {
-                echo 'Waiting for SonarQube Quality Gate...'
-
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
-        stage('Docker Environment Check') {
-            steps {
-                echo 'Checking Docker and Kubernetes access...'
-
-                bat 'docker --version'
-                bat 'kubectl config current-context'
-                bat 'kubectl get nodes'
-                bat 'kubectl get deployment apixplore-backend'
-            }
-        }
-
-        
-stage('Build Docker Image') {
     steps {
-        echo 'Checking Dockerfile and building APIxplore backend image...'
+        echo 'Waiting for SonarQube Quality Gate...'
 
-        bat '''
-            if not exist "%WORKSPACE%\\backend\\Dockerfile" (
-                echo ERROR: backend\\Dockerfile was not found in the Jenkins workspace.
-                exit /b 1
-            )
-
-            docker build --pull=false ^
-                -t apixplore-backend:v1 ^
-                -f "%WORKSPACE%\\backend\\Dockerfile" ^
-                "%WORKSPACE%\\backend"
-
-            if errorlevel 1 exit /b 1
-        '''
+        timeout(time: 5, unit: 'MINUTES') {
+            waitForQualityGate abortPipeline: true
+        }
     }
 }
-
-
-        stage('Import Image into Kubernetes') {
-            steps {
-                echo 'Exporting the image for the Kubernetes node...'
-
-                bat 'docker save -o apixplore-backend.tar apixplore-backend:v1'
-
-                bat 'docker cp apixplore-backend.tar desktop-control-plane:/root/apixplore-backend.tar'
-
-                bat 'docker exec desktop-control-plane ctr -n k8s.io images import /root/apixplore-backend.tar'
-
-                bat 'docker exec desktop-control-plane rm -f /root/apixplore-backend.tar'
-
-                bat 'del apixplore-backend.tar'
-            }
-        }
-
-        stage('Deploy to Kubernetes') {
-            steps {
-                echo 'Restarting the APIxplore backend deployment...'
-
-                bat 'kubectl rollout restart deployment/apixplore-backend'
-
-                bat 'kubectl rollout status deployment/apixplore-backend --timeout=180s'
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                echo 'Verifying deployment health...'
-
-                bat 'kubectl get deployments'
-                bat 'kubectl get pods'
-                bat 'kubectl get services'
-            }
-        }
     }
 
     post {
