@@ -10,6 +10,7 @@ pipeline {
         VENV = '.jenkins-venv'
         BACKEND = 'backend'
         REQUIREMENTS = 'backend\\requirements.txt'
+        KUBECONFIG = 'C:\\ProgramData\\Jenkins\\.jenkins\\kubeconfig'
     }
 
     stages {
@@ -53,6 +54,7 @@ pipeline {
                 bat '"%VENV%\\Scripts\\python.exe" -m pytest -v backend\\test_simple.py --no-cov'
             }
         }
+
         stage('SonarQube Analysis') {
             steps {
                 echo 'Running SonarQube static code analysis...'
@@ -73,19 +75,24 @@ pipeline {
                 }
             }
         }
+
         stage('Quality Gate') {
             steps {
                 echo 'Waiting for SonarQube Quality Gate...'
+
                 timeout(time: 5, unit: 'MINUTES') {
-                waitForQualityGate abortPipeline: true
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
-                stage('Docker Environment Check') {
+
+        stage('Docker Environment Check') {
             steps {
                 echo 'Checking Docker and Kubernetes access...'
+
                 bat 'docker --version'
                 bat 'kubectl config current-context'
+                bat 'kubectl get nodes'
                 bat 'kubectl get deployment apixplore-backend'
             }
         }
@@ -93,6 +100,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 echo 'Building the APIxplore backend image...'
+
                 bat 'docker build -t apixplore-backend:v1 -f backend\\Dockerfile backend'
             }
         }
@@ -100,6 +108,7 @@ pipeline {
         stage('Import Image into Kubernetes') {
             steps {
                 echo 'Exporting the image for the Kubernetes node...'
+
                 bat 'docker save -o apixplore-backend.tar apixplore-backend:v1'
 
                 bat 'docker cp apixplore-backend.tar desktop-control-plane:/root/apixplore-backend.tar'
@@ -115,7 +124,9 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 echo 'Restarting the APIxplore backend deployment...'
+
                 bat 'kubectl rollout restart deployment/apixplore-backend'
+
                 bat 'kubectl rollout status deployment/apixplore-backend --timeout=180s'
             }
         }
@@ -123,6 +134,7 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 echo 'Verifying deployment health...'
+
                 bat 'kubectl get deployments'
                 bat 'kubectl get pods'
                 bat 'kubectl get services'
