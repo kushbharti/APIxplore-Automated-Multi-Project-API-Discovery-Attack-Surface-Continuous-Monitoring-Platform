@@ -1,0 +1,61 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apixplore-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apixplore-backend
+  template:
+    metadata:
+      labels:
+        app: apixplore-backend
+    spec:
+      containers:
+        - name: backend
+          image: apixplore-backend:v1
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: APP_ENV
+              value: "development"
+            - name: DEBUG
+              value: "true"
+            - name: DEVELOPMENT_MODE
+              value: "true"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: LOG_FORMAT
+              value: "console"
+            - name: CORS_ALLOWED_ORIGINS
+              value: '["http://localhost:5173","http://localhost:3000"]'
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: apixplore-secrets
+                  key: SECRET_KEY
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: apixplore-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: apixplore-secrets
+                  key: REDIS_URL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apixplore-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: apixplore-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
