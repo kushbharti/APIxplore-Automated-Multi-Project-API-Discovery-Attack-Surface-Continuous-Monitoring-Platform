@@ -74,14 +74,60 @@ pipeline {
             }
         }
         stage('Quality Gate') {
-    steps {
-        echo 'Waiting for SonarQube Quality Gate...'
-
-        timeout(time: 5, unit: 'MINUTES') {
-            waitForQualityGate abortPipeline: true
+            steps {
+                echo 'Waiting for SonarQube Quality Gate...'
+                timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+                }
+            }
         }
-    }
-}
+                stage('Docker Environment Check') {
+            steps {
+                echo 'Checking Docker and Kubernetes access...'
+                bat 'docker --version'
+                bat 'kubectl config current-context'
+                bat 'kubectl get deployment apixplore-backend'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo 'Building the APIxplore backend image...'
+                bat 'docker build -t apixplore-backend:v1 -f backend\\Dockerfile backend'
+            }
+        }
+
+        stage('Import Image into Kubernetes') {
+            steps {
+                echo 'Exporting the image for the Kubernetes node...'
+                bat 'docker save -o apixplore-backend.tar apixplore-backend:v1'
+
+                bat 'docker cp apixplore-backend.tar desktop-control-plane:/root/apixplore-backend.tar'
+
+                bat 'docker exec desktop-control-plane ctr -n k8s.io images import /root/apixplore-backend.tar'
+
+                bat 'docker exec desktop-control-plane rm -f /root/apixplore-backend.tar'
+
+                bat 'del apixplore-backend.tar'
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo 'Restarting the APIxplore backend deployment...'
+                bat 'kubectl rollout restart deployment/apixplore-backend'
+                bat 'kubectl rollout status deployment/apixplore-backend --timeout=180s'
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo 'Verifying deployment health...'
+                bat 'kubectl get deployments'
+                bat 'kubectl get pods'
+                bat 'kubectl get services'
+            }
+        }
     }
 
     post {
