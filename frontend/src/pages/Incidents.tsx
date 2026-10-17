@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
-import { ShieldAlert, Clock, Activity, AlertOctagon, Filter, ShieldCheck, FileText, CheckCircle2, Search } from 'lucide-react';
+import { ShieldAlert, Clock, Activity, AlertOctagon, Filter, ShieldCheck, FileText, CheckCircle2, Search } from '../components/icons';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import { useNavigate } from 'react-router-dom';
-import { formatDate } from '../utils/date';
+import { formatDate, formatTime } from '../utils/date';
 
 export const Incidents = () => {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
@@ -201,7 +201,7 @@ export const Incidents = () => {
                         <div className="ml-4 p-4 rounded-xl border border-[var(--border-color)] bg-[rgba(255,255,255,0.02)]">
                           <div className="flex justify-between items-start mb-2">
                             <h5 className="font-bold text-sm text-[var(--text-primary)]">{action.action_type}</h5>
-                            <time className="text-xs text-[var(--muted)] font-mono">{new Date(action.created_at).toLocaleTimeString()}</time>
+                            <time className="text-xs text-[var(--muted)] font-mono">{formatTime(action.created_at)}</time>
                           </div>
                           <p className="text-sm text-[var(--text-secondary)]">{action.details || 'Automated system action executed'}</p>
                         </div>
@@ -213,7 +213,7 @@ export const Incidents = () => {
                       <div className="ml-4 p-4 rounded-xl border border-[var(--border-color)] bg-[rgba(255,255,255,0.02)]">
                         <div className="flex justify-between items-start mb-2">
                           <h5 className="font-bold text-sm text-[var(--text-primary)]">Incident Logged</h5>
-                          <time className="text-xs text-[var(--muted)] font-mono">{new Date(activeIncident.created_at).toLocaleTimeString()}</time>
+                          <time className="text-xs text-[var(--muted)] font-mono">{formatTime(activeIncident.created_at)}</time>
                         </div>
                         <p className="text-sm text-[var(--text-secondary)]">Incident was detected and logged by the monitoring engine.</p>
                       </div>
@@ -226,7 +226,7 @@ export const Incidents = () => {
                       <div className="ml-4 p-4 rounded-xl border border-[rgba(16,185,129,0.3)] bg-[var(--success-transparent)]">
                         <div className="flex justify-between items-start mb-2">
                           <h5 className="font-bold text-sm text-[var(--success)]">Incident Resolved</h5>
-                          <time className="text-xs text-[var(--success)] opacity-80 font-mono">{new Date(activeIncident.resolved_at).toLocaleTimeString()}</time>
+                          <time className="text-xs text-[var(--success)] opacity-80 font-mono">{formatTime(activeIncident.resolved_at)}</time>
                         </div>
                         <p className="text-sm text-[var(--success)] opacity-90">System recovered and stabilized. Normal operations resumed.</p>
                       </div>

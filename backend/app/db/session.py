@@ -45,27 +45,74 @@ _engine: AsyncEngine | None = None
 _async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
+from sqlalchemy.engine.url import make_url
+from typing import Any
+
+def parse_db_url_and_connect_args(url_str: str) -> tuple[str, dict[str, Any]]:
+    """
+    Parse a database URL and build appropriate connect_args for the driver.
+
+    Handles:
+    - SQLite: check_same_thread=False, timeout=15
+    - NeonDB / PostgreSQL:
+      - Normalizes/strips 'sslmode' query param so asyncpg does not raise
+        'connect() got an unexpected keyword argument sslmode'
+      - Translates sslmode=require to connect_args={'ssl': 'require'}
+      - Sets statement_cache_size=0 for Neon pooler (PgBouncer) compatibility
+      - Enforces SSL for any host containing neon.tech
+    """
+    if url_str.startswith("sqlite"):
+        return url_str, {"check_same_thread": False, "timeout": 15}
+
+    url = make_url(url_str)
+    query = dict(url.query)
+    connect_args: dict[str, Any] = {}
+
+    ssl_mode = None
+    libpq_params = ("sslmode", "channel_binding", "gssencmode", "sslcert", "sslkey", "sslrootcert", "sslcrl")
+    for param in libpq_params:
+        val = query.pop(param, None)
+        if param == "sslmode" and val:
+            ssl_mode = val
+    ssl_param = query.pop("ssl", None)
+
+    is_neon = bool(url.host and "neon.tech" in url.host)
+    is_pooler = bool(url.host and "pooler" in url.host)
+
+    if is_neon or ssl_mode or ssl_param:
+        connect_args["ssl"] = ssl_mode or ssl_param or "require"
+
+    if is_neon or is_pooler:
+        # PgBouncer / Neon connection pooler does not support prepared statement caches
+        connect_args["statement_cache_size"] = 0
+
+    clean_url = url._replace(query=query)
+    return clean_url.render_as_string(hide_password=False), connect_args
+
+
 def _build_engine() -> AsyncEngine:
     settings = get_settings()
     url = settings.database_url_str
+    clean_url, connect_args = parse_db_url_and_connect_args(url)
 
     # SQLite (used in tests) does not support pool_size/max_overflow
-    if url.startswith("sqlite"):
+    if clean_url.startswith("sqlite"):
         return create_async_engine(
-            url,
+            clean_url,
             echo=settings.db_echo,
-            connect_args={"check_same_thread": False, "timeout": 15},
+            connect_args=connect_args,
             poolclass=StaticPool,
         )
 
     return create_async_engine(
-        url,
+        clean_url,
         echo=settings.db_echo,
+        connect_args=connect_args,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
         pool_timeout=settings.db_pool_timeout,
         pool_pre_ping=True,
-        pool_recycle=3600,
+        pool_recycle=300,
     )
 
 

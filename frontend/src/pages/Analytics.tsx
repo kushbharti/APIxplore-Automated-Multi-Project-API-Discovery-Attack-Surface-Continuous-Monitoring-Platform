@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import type { OverviewStats } from '../types';
-import { Activity, ServerCrash, CheckCircle, Clock, Zap, LineChart, PieChart } from 'lucide-react';
+import { Activity, ServerCrash, CheckCircle, Clock, Zap, LineChart, PieChart } from '../components/icons';
 import { Card } from '../components/Card';
 
 export const Analytics = () => {

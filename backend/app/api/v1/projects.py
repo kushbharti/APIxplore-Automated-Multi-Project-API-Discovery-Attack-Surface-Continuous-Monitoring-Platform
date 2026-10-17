@@ -61,56 +61,33 @@ async def create_project(
     rid = getattr(request.state, "request_id", "unknown")
     settings = get_settings()
 
-    import re
-    from urllib.parse import urlparse, urlunparse
+    original_url = body.url.strip()
 
-    # Matches both profile URLs (github.com/USER) and repo URLs (github.com/USER/REPO)
-    _GITHUB_RE = re.compile(
-        r"^https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?/?(?:\?.*)?$",
-        re.IGNORECASE,
-    )
-    is_github = bool(_GITHUB_RE.match(body.url))
-
-    # Normalize URL
-    parsed = urlparse(body.url)
-    if is_github:
-        # For GitHub URLs: store a clean canonical URL without query string or trailing slash.
-        # Strip scheme to lowercase, remove trailing slashes from the path, drop query/fragment.
-        clean_path = parsed.path.rstrip("/")
-        normalized_url = f"https://github.com{clean_path}"
-    else:
-        scheme = parsed.scheme if parsed.scheme else "https"
-        netloc = parsed.netloc if parsed.netloc else parsed.path
-        normalized_url = f"{scheme}://{netloc.lower()}".rstrip("/")
-
-    # SSRF validation — skip for GitHub (we use their API)
-    if not is_github:
-        try:
-            validate_url_for_outbound(normalized_url, context="project_create")
-            validate_domain_allowlist(normalized_url, settings.allowed_domains)
-        except SSRFBlockedError as exc:
-            raise exc
-        except ValueError as exc:
-            raise SSRFBlockedError(str(exc)) from exc
+    # SSRF validation on target URL
+    try:
+        validate_url_for_outbound(original_url, context="project_create")
+        validate_domain_allowlist(original_url, settings.allowed_domains)
+    except SSRFBlockedError as exc:
+        raise exc
+    except ValueError as exc:
+        raise SSRFBlockedError(str(exc)) from exc
 
     repo = ProjectRepository(session)
-    existing = await repo.get_by_url(normalized_url)
+    existing = await repo.get_by_url(original_url)
     if existing:
         return DataResponse(data=ProjectOut.model_validate(existing), request_id=rid)
 
-    source_type = body.source_type
-    if is_github and source_type == "WEBSITE":
-        source_type = "GITHUB_REPOSITORY"
-
+    # Exact target URL entered by user is preserved throughout project lifecycle
     project = Project(
         name=body.name,
-        url=normalized_url,
+        url=original_url,
         description=body.description,
-        source_type=source_type,
-        deployment_url=body.deployment_url,
+        source_type=body.source_type,
+        deployment_url=body.deployment_url.strip() if body.deployment_url else None,
     )
     created = await repo.create(project)
     return DataResponse(data=ProjectOut.model_validate(created), request_id=rid)
+
 
 
 @router.get("/{project_id}", response_model=DataResponse[ProjectOut])

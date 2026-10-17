@@ -62,7 +62,7 @@ Navigate to the `backend` directory and ensure a `.env` file exists.
 | `APP_ENV` | Yes | Controls environment behaviors | `development` | No |
 | `DEBUG` | No | Enables debug mode | `true` | No |
 | `SECRET_KEY` | Yes | JWT signing secret | `change-me...` | **Yes** |
-| `DATABASE_URL` | Yes | SQLAlchemy connection string | `sqlite+aiosqlite:///./db.sqlite3` | **Yes** |
+| `DATABASE_URL` | Yes | SQLAlchemy connection string (NeonDB PostgreSQL or SQLite) | `postgresql+asyncpg://neondb_owner:***@ep-123.us-east-2.aws.neon.tech/neondb?sslmode=require` | **Yes** |
 | `REDIS_URL` | Yes | Redis connection string | `redis://localhost:6379/0` | **Yes** |
 | `FIRST_ADMIN_EMAIL` | Yes | Seeds initial admin account | `admin@example.com` | No |
 | `FIRST_ADMIN_PASSWORD`| Yes | Initial admin password | `Admin1234!` | **Yes** |
@@ -75,7 +75,10 @@ APP_ENV=development
 SECRET_KEY=generate_a_secure_random_string_here
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 ALGORITHM=HS256
-DATABASE_URL=sqlite+aiosqlite:///./db.sqlite3
+# NeonDB PostgreSQL (Recommended):
+DATABASE_URL=postgresql+asyncpg://neondb_owner:YOUR_NEON_PASSWORD@ep-sample-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
+# Or local SQLite fallback:
+# DATABASE_URL=sqlite+aiosqlite:///./db.sqlite3
 REDIS_URL=redis://localhost:6379/0
 MONITOR_POLL_INTERVAL_SECONDS=10
 LOG_LEVEL=INFO
@@ -119,21 +122,34 @@ uv run python -c "import fastapi; print(fastapi.__version__)"
 
 ---
 
-## 5. Database Setup
+## 5. Database Setup (NeonDB / PostgreSQL & SQLite)
 
-The project uses `sqlite+aiosqlite` by default for development. Production utilizes `postgresql+asyncpg` (e.g., Supabase). 
+The platform is configured for **NeonDB (Neon-hosted PostgreSQL)** for production and cloud development, with `sqlite+aiosqlite` available for local zero-dependency testing.
 
-### Setup Instructions
-1. Ensure your `DATABASE_URL` is set in `.env`.
-2. Apply database migrations to create all required tables:
+### NeonDB Configuration
+1. Create a PostgreSQL database on [Neon Console](https://console.neon.tech).
+2. Copy the connection string. Both direct and pooled (`-pooler`) connection strings are supported:
+   ```text
+   postgresql+asyncpg://neondb_owner:<password>@ep-sample-123456.us-east-2.aws.neon.tech/neondb?sslmode=require
+   ```
+3. Set `DATABASE_URL` in `backend/.env`.
+
+> [!NOTE]
+> The engine automatically strips `?sslmode=require` from the DSN to prevent `asyncpg` unexpected keyword errors, converts it to `connect_args={"ssl": "require"}`, and sets `statement_cache_size=0` for Neon PgBouncer connection pooler compatibility.
+
+### Run Migrations
+Apply all schema migrations against NeonDB or SQLite:
 
 ```powershell
 uv run alembic upgrade head
 ```
 
 ### Verification
-If using SQLite, verify that `db.sqlite3` was created in the `backend/` folder.
-If migrations fail, verify that you are in the `backend` directory and that `aiosqlite` or `asyncpg` is installed via `uv sync`.
+To verify database connectivity and check table statuses:
+```powershell
+uv run python -c "import asyncio; from app.db.session import check_db_health; print('DB Reachable:', asyncio.run(check_db_health()))"
+```
+*(Expected output: `DB Reachable: True`)*
 
 ---
 

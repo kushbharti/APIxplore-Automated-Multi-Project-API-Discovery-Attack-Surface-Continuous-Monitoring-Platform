@@ -143,7 +143,7 @@ class IncidentManager:
             # Fire-and-forget recovery (don't block the monitoring loop)
             # In production, this would be a proper background task queue
             asyncio.create_task(
-                attempt_recovery(incident, failure_type, self._repo._session)
+                attempt_recovery(str(incident.id), failure_type, session=None)
             )
 
     async def _fire_alert(self, incident: Incident) -> None:

@@ -1,11 +1,15 @@
 import asyncio
-from sqlalchemy.ext.asyncio import create_async_engine
-engine = create_async_engine('postgresql+asyncpg://postgres:postgres@localhost:5432/api_observability')
+from sqlalchemy import text
+from app.db.session import get_engine
+
 async def test():
     try:
+        engine = get_engine()
         async with engine.begin() as conn:
-            pass
-        print('Success')
+            res = await conn.execute(text("SELECT 1"))
+            print("NeonDB Connection Success:", res.scalar())
     except Exception as e:
         print(f"Error: {e}")
-asyncio.run(test())
+
+if __name__ == "__main__":
+    asyncio.run(test())

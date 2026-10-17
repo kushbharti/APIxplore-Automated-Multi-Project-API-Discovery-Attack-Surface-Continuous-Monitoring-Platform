@@ -1,154 +1,456 @@
-import { useState, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import type { Project, DiscoveryRun } from '../types';
-import { History, Shield, CheckCircle, XCircle, Clock, AlertTriangle, ChevronRight, Activity } from 'lucide-react';
+import {
+  History, CheckCircle, XCircle, Clock, AlertTriangle,
+  ChevronRight, Activity, Search, RefreshCw, NetworkGraphIcon,
+  Globe, ArrowRight, AlertOctagon
+} from '../components/icons';
 import { Card } from '../components/Card';
-import { Badge } from '../components/Badge';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { formatDate } from '../utils/date';
 
 interface EnrichedRun extends DiscoveryRun {
   project_name: string;
+  project_url: string;
+  source_type?: string;
 }
 
 export const DiscoveryHistory = () => {
-  const { data: projects, isLoading: projectsLoading } = useQuery({
-    queryKey: ['projects-list'],
+  const navigate = useNavigate();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [selectedProjectId, setSelectedProjectId] = useState('ALL');
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+
+  // Synchronized with global ['projects']
+  const { data: projects = [], isLoading: projectsLoading } = useQuery<Project[]>({
+    queryKey: ['projects'],
     queryFn: () => apiFetch<Project[]>('/projects'),
   });
 
-  const [runs, setRuns] = useState<EnrichedRun[]>([]);
-  const [loadingRuns, setLoadingRuns] = useState(false);
+  // Query discovery runs across projects
+  const {
+    data: allRuns = [],
+    isLoading: runsLoading,
+    error: runsError,
+    refetch: refetchRuns
+  } = useQuery<EnrichedRun[]>({
+    queryKey: ['discovery-history', projects.map(p => p.id).join(',')],
+    queryFn: async () => {
+      if (projects.length === 0) return [];
+      const fetchList = projects.slice(0, 20); // Top projects
+      const runPromises = fetchList.map(async (p) => {
+        try {
+          const runs = await apiFetch<DiscoveryRun[]>(`/projects/${p.id}/discovery?limit=10`);
+          return runs.map(r => ({
+            ...r,
+            project_name: p.name,
+            project_url: p.url,
+            source_type: p.source_type,
+          }));
+        } catch {
+          return [];
+        }
+      });
+      const results = await Promise.all(runPromises);
+      return results.flat().sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    },
+    enabled: projects.length > 0,
+    refetchInterval: 12000,
+  });
 
-  useEffect(() => {
-    const fetchRuns = async () => {
-      if (!projects || projects.length === 0) return;
-      setLoadingRuns(true);
-      
-      try {
-        const promises = projects.slice(0, 10).map(async (p) => {
-          try {
-            const projectRuns = await apiFetch<DiscoveryRun[]>(`/projects/${p.id}/discovery`);
-            return projectRuns.map(r => ({ ...r, project_name: p.name }));
-          } catch (e) {
-            return [];
-          }
-        });
-        
-        const results = await Promise.all(promises);
-        const allRuns = results.flat().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-        setRuns(allRuns);
-      } finally {
-        setLoadingRuns(false);
-      }
-    };
-    
-    fetchRuns();
-  }, [projects]);
+  const isLoading = projectsLoading || runsLoading;
 
-  const isLoading = projectsLoading || loadingRuns;
+  // Filtered runs
+  const filteredRuns = useMemo(() => {
+    return allRuns.filter(r => {
+      const q = searchTerm.toLowerCase();
+      const matchesSearch = !q ||
+        r.project_name.toLowerCase().includes(q) ||
+        r.project_url.toLowerCase().includes(q) ||
+        r.id.toLowerCase().includes(q);
 
+      const matchesStatus = statusFilter === 'ALL' || r.status === statusFilter;
+      const matchesProject = selectedProjectId === 'ALL' || r.project_id === selectedProjectId;
+
+      return matchesSearch && matchesStatus && matchesProject;
+    });
+  }, [allRuns, searchTerm, statusFilter, selectedProjectId]);
+
+  // Visually distinct status badge & indicator
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'COMPLETED': return <Badge variant="success">Completed</Badge>;
-      case 'FAILED': return <Badge variant='error'>Failed</Badge>;
-      case 'RUNNING': return <Badge variant="default" className="animate-pulse">Running</Badge>;
-      case 'PENDING': return <Badge variant="default">Pending</Badge>;
-      default: return <Badge variant="default">{status}</Badge>;
+      case 'COMPLETED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            <CheckCircle size={13} className="text-emerald-600 flex-shrink-0" />
+            COMPLETED
+          </span>
+        );
+      case 'PARTIAL':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+            <AlertTriangle size={13} className="text-amber-600 flex-shrink-0" />
+            PARTIAL
+          </span>
+        );
+      case 'FAILED':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-50 text-rose-700 border border-rose-200">
+            <XCircle size={13} className="text-rose-600 flex-shrink-0" />
+            FAILED
+          </span>
+        );
+      case 'RUNNING':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200 animate-pulse">
+            <Activity size={13} className="text-blue-600 flex-shrink-0 animate-spin" />
+            RUNNING
+          </span>
+        );
+      case 'QUEUED':
+      case 'PENDING':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
+            <Clock size={13} className="text-slate-500 flex-shrink-0" />
+            {status}
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+            {status}
+          </span>
+        );
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'COMPLETED': return <CheckCircle size={18} className="text-[var(--success)]" />;
-      case 'FAILED': return <XCircle size={18} className="text-[var(--error)]" />;
-      case 'RUNNING': return <Activity size={18} className="text-[var(--primary)]" />;
-      default: return <Clock size={18} className="text-[var(--muted)]" />;
-    }
+  const calculateDuration = (start?: string | null, end?: string | null) => {
+    if (!start) return '—';
+    if (!end) return 'In progress';
+    const s = new Date(start).getTime();
+    const e = new Date(end).getTime();
+    const diffSec = Math.max(1, Math.round((e - s) / 1000));
+    if (diffSec < 60) return `${diffSec}s`;
+    const min = Math.floor(diffSec / 60);
+    const rem = diffSec % 60;
+    return `${min}m ${rem}s`;
   };
 
   return (
-    <div className="flex flex-col h-full gap-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full gap-6 max-w-7xl mx-auto w-full pb-12 font-sans">
+      {/* ── Header ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold mb-2">Discovery History</h2>
-          <p className="text-[var(--text-secondary)] text-sm max-w-2xl">
-            A global chronological ledger of all automated endpoint discovery runs across your projects.
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">Discovery History</h1>
+            <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+              {allRuns.length} Runs Recorded
+            </span>
+          </div>
+          <p className="text-slate-500 text-sm mt-1">
+            Audit trail of all automated crawler executions, OpenAPI parsing jobs, and AST repository inspections.
           </p>
+        </div>
+
+        <button
+          onClick={() => refetchRuns()}
+          className="flex items-center gap-2 px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-xs transition-colors self-start sm:self-auto"
+        >
+          <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+          <span>Refresh Ledger</span>
+        </button>
+      </div>
+
+      {/* ── Toolbar: Search & Filters ── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs">
+        <div className="flex items-center gap-2 flex-1 min-w-[260px] max-w-md bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 focus-within:border-blue-500 focus-within:bg-white transition-colors">
+          <Search size={16} className="text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by project name, exact target URL, or run ID..."
+            className="bg-transparent border-none outline-none text-xs w-full text-slate-800 placeholder-slate-400 font-medium"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Status Filter */}
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-slate-400 font-medium">Status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              <option value="ALL">All Statuses</option>
+              <option value="COMPLETED">Completed</option>
+              <option value="PARTIAL">Partial</option>
+              <option value="FAILED">Failed</option>
+              <option value="RUNNING">Running</option>
+              <option value="QUEUED">Queued / Pending</option>
+            </select>
+          </div>
+
+          {/* Project Filter */}
+          <div className="flex items-center gap-1.5 text-xs">
+            <span className="text-slate-400 font-medium">Project:</span>
+            <select
+              value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20 max-w-[180px] truncate"
+            >
+              <option value="ALL">All Projects</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {(searchTerm || statusFilter !== 'ALL' || selectedProjectId !== 'ALL') && (
+            <button
+              onClick={() => { setSearchTerm(''); setStatusFilter('ALL'); setSelectedProjectId('ALL'); }}
+              className="text-xs text-blue-600 font-bold hover:underline px-2 py-1"
+            >
+              Reset
+            </button>
+          )}
         </div>
       </div>
 
-      <Card className="flex-1 flex flex-col overflow-hidden p-0 border-[var(--border-color)]">
-        <div className="grid grid-cols-12 gap-4 p-4 border-b border-[var(--border-color)] bg-[rgba(255,255,255,0.02)] text-xs font-semibold text-[var(--muted)] uppercase tracking-wider">
-          <div className="col-span-3">Project</div>
-          <div className="col-span-2">Status</div>
-          <div className="col-span-2">Methods Used</div>
-          <div className="col-span-3">Candidates Found</div>
-          <div className="col-span-2">Started</div>
+      {/* ── Table / Cards Container ── */}
+      <Card className="flex-1 flex flex-col p-0 border border-slate-200 shadow-xs bg-white rounded-2xl overflow-hidden">
+        {/* Table Header */}
+        <div className="hidden lg:grid grid-cols-12 gap-4 px-6 py-3.5 bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+          <div className="col-span-3">Project & Target URL</div>
+          <div className="col-span-2">Execution State</div>
+          <div className="col-span-2">Discovery Providers</div>
+          <div className="col-span-3">Surface Inventory</div>
+          <div className="col-span-2 text-right">Timestamp & Actions</div>
         </div>
-        
-        <div className="flex-1 overflow-y-auto p-2">
-          {isLoading && (
-            <div className="flex flex-col gap-2 p-4">
-              {[1,2,3,4,5].map(i => (
-                <div key={i} className="h-16 rounded-xl shimmer border border-[var(--border-color)]"></div>
-              ))}
+
+        {/* Loading Skeletons */}
+        {isLoading && (
+          <div className="flex flex-col gap-3 p-5">
+            {[1, 2, 3, 4, 5].map(i => (
+              <div key={i} className="h-20 rounded-xl bg-slate-50 border border-slate-200 animate-pulse" />
+            ))}
+          </div>
+        )}
+
+        {/* Error State */}
+        {runsError && (
+          <div className="p-12 text-center text-rose-700 bg-rose-50/50">
+            <AlertOctagon size={36} className="mx-auto mb-2 text-rose-600" />
+            <h3 className="font-bold text-base mb-1">Failed to query discovery history</h3>
+            <p className="text-xs text-rose-600 mb-4">Ensure the APIxplore backend database is initialized and accessible.</p>
+            <button
+              onClick={() => refetchRuns()}
+              className="px-4 py-2 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Empty State */}
+        {!isLoading && !runsError && filteredRuns.length === 0 && (
+          <div className="flex flex-col items-center justify-center p-16 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-3">
+              <History size={28} />
             </div>
-          )}
+            <h3 className="text-base font-bold text-slate-900 mb-1">
+              {searchTerm || statusFilter !== 'ALL' || selectedProjectId !== 'ALL'
+                ? 'No matching discovery runs found'
+                : 'No discovery runs recorded yet'}
+            </h3>
+            <p className="text-xs text-slate-500 max-w-sm mb-4">
+              {searchTerm || statusFilter !== 'ALL' || selectedProjectId !== 'ALL'
+                ? 'Try broadening your search term or clearing the active filters.'
+                : 'Run a discovery on any project to start mapping its endpoints and security telemetry.'}
+            </p>
+            <button
+              onClick={() => navigate('/projects')}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+            >
+              Go to Projects
+            </button>
+          </div>
+        )}
 
-          {!isLoading && runs.length === 0 && (
-             <div className="flex flex-col items-center justify-center p-16 text-center">
-               <History size={48} className="text-[var(--muted)] mb-4 opacity-50" />
-               <h3 className="text-lg font-medium text-[var(--text-primary)] mb-1">No discovery runs found</h3>
-               <p className="text-sm text-[var(--text-secondary)]">Create a project to trigger a discovery run.</p>
-             </div>
-          )}
+        {/* Rows */}
+        {!isLoading && !runsError && filteredRuns.length > 0 && (
+          <div className="divide-y divide-slate-100 overflow-y-auto">
+            {filteredRuns.map((run) => {
+              const isExpanded = expandedRunId === run.id;
 
-          {!isLoading && runs.map((run) => (
-            <Link key={run.id} to={`/projects/${run.project_id}`} className="grid grid-cols-12 gap-4 p-4 border border-transparent border-b-[var(--border-color)] hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.05)] rounded-xl transition-colors items-center text-sm group">
-              <div className="col-span-3 font-medium flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[rgba(255,255,255,0.05)] flex items-center justify-center border border-[var(--border-color)] group-hover:border-[var(--primary)] transition-colors">
-                  <Shield size={14} className="text-[var(--text-primary)] group-hover:text-[var(--primary)]" />
-                </div>
-                <span className="truncate text-white">{run.project_name}</span>
-              </div>
-              
-              <div className="col-span-2 flex items-center gap-2">
-                {getStatusIcon(run.status)}
-                {getStatusBadge(run.status)}
-              </div>
-              
-              <div className="col-span-2 flex gap-1">
-                {run.openapi_checked && <span className="px-2 py-0.5 rounded bg-[rgba(52,211,153,0.1)] text-[var(--success)] text-[10px] font-bold">OAS</span>}
-                {run.crawl_checked && <span className="px-2 py-0.5 rounded bg-[rgba(129,140,248,0.1)] text-[var(--primary-light)] text-[10px] font-bold">CRAWL</span>}
-                {run.js_checked && <span className="px-2 py-0.5 rounded bg-[rgba(251,146,60,0.1)] text-[var(--warning)] text-[10px] font-bold">JS</span>}
-                {(!run.openapi_checked && !run.crawl_checked && !run.js_checked) && <span className="text-[var(--muted)] text-xs">None</span>}
-              </div>
-              
-              <div className="col-span-3 flex items-center gap-4">
-                <div className="flex flex-col">
-                  <span className="text-xs text-[var(--muted)]">Total</span>
-                  <span className="font-semibold text-white">{run.candidates_total}</span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-xs text-[var(--muted)]">Verified</span>
-                  <span className="font-semibold text-[var(--success)]">{run.candidates_verified}</span>
-                </div>
-                {(run.candidates_blocked > 0 || run.candidates_unavailable > 0) && (
-                  <div className="flex items-center justify-center w-6 h-6 rounded bg-[var(--error-transparent)] text-[var(--error)]" title={`${run.candidates_blocked} Blocked, ${run.candidates_unavailable} Unavailable`}>
-                    <AlertTriangle size={12} />
+              return (
+                <div
+                  key={run.id}
+                  className={`transition-colors ${isExpanded ? 'bg-blue-50/20' : 'hover:bg-slate-50/70'}`}
+                >
+                  <div
+                    onClick={() => setExpandedRunId(isExpanded ? null : run.id)}
+                    className="p-4 sm:px-6 grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 items-center cursor-pointer select-none"
+                  >
+                    {/* Project & Target URL */}
+                    <div className="lg:col-span-3 min-w-0">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-blue-100/70 text-blue-700">
+                          <Globe size={16} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-xs text-slate-900 truncate" title={run.project_name}>
+                            {run.project_name}
+                          </div>
+                          {/* Exact target URL preserved */}
+                          <div className="text-[11px] text-slate-500 font-mono truncate" title={run.project_url}>
+                            {run.project_url}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Status Indicator */}
+                    <div className="lg:col-span-2 flex items-center gap-2">
+                      {getStatusBadge(run.status)}
+                    </div>
+
+                    {/* Methods / Providers Used */}
+                    <div className="lg:col-span-2 flex flex-wrap gap-1 items-center">
+                      {run.openapi_checked && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200" title="OpenAPI / Swagger Spec Probed">
+                          OAS
+                        </span>
+                      )}
+                      {run.crawl_checked && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200" title="HTML / Endpoint Web Crawler">
+                          CRAWL
+                        </span>
+                      )}
+                      {run.js_checked && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200" title="Client JavaScript Analyzer">
+                          JS
+                        </span>
+                      )}
+                      {!run.openapi_checked && !run.crawl_checked && !run.js_checked && (
+                        <span className="text-[11px] text-slate-400 font-medium">Standard</span>
+                      )}
+                    </div>
+
+                    {/* Discovered Surface Metrics */}
+                    <div className="lg:col-span-3 flex items-center gap-3">
+                      <div className="flex flex-col">
+                        <span className="text-[9px] uppercase tracking-wider font-bold text-slate-400">Total</span>
+                        <span className="text-xs font-extrabold text-slate-900">{run.candidates_total}</span>
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[9px] uppercase tracking-wider font-bold text-emerald-600">Verified</span>
+                        <span className="text-xs font-extrabold text-emerald-700">{run.candidates_verified}</span>
+                      </div>
+                      {run.candidates_unavailable > 0 && (
+                        <div className="flex flex-col">
+                          <span className="text-[9px] uppercase tracking-wider font-bold text-amber-600">Unavail</span>
+                          <span className="text-xs font-extrabold text-amber-700">{run.candidates_unavailable}</span>
+                        </div>
+                      )}
+                      {run.candidates_blocked > 0 && (
+                        <div className="flex flex-col">
+                          <span className="text-[9px] uppercase tracking-wider font-bold text-rose-600">Blocked</span>
+                          <span className="text-xs font-extrabold text-rose-700">{run.candidates_blocked}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Timestamp & Actions */}
+                    <div className="lg:col-span-2 flex items-center justify-between lg:justify-end gap-3 text-xs">
+                      <div className="text-right">
+                        <div className="font-semibold text-slate-800 text-[11px]">{formatDate(run.created_at)}</div>
+                        <div className="text-[10px] text-slate-400">Duration: {calculateDuration(run.started_at, run.completed_at)}</div>
+                      </div>
+                      <ChevronRight
+                        size={16}
+                        className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-90 text-blue-600' : ''}`}
+                      />
+                    </div>
                   </div>
-                )}
-              </div>
-              
-              <div className="col-span-2 text-[var(--text-secondary)] flex items-center justify-between text-xs">
-                <span>{formatDate(run.created_at)}</span>
-                <ChevronRight size={16} className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--primary)]" />
-              </div>
-            </Link>
-          ))}
-        </div>
+
+                  {/* ── Expandable Details Drawer ── */}
+                  {isExpanded && (
+                    <div className="px-6 py-4 bg-slate-50 border-t border-slate-200/80 text-xs flex flex-col gap-3 animate-fade-in">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3 font-mono text-[11px] text-slate-600">
+                          <span>Run ID: <strong className="text-slate-900">{run.id}</strong></span>
+                          <span>•</span>
+                          <span>Project ID: <strong className="text-slate-900">{run.project_id}</strong></span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Link
+                            to={`/graph?project=${run.project_id}`}
+                            className="flex items-center gap-1 px-3 py-1 bg-white border border-slate-200 hover:border-blue-300 rounded-lg text-blue-600 font-bold transition-all text-xs shadow-xs"
+                          >
+                            <NetworkGraphIcon size={13} /> View in Graph
+                          </Link>
+                          <Link
+                            to={`/projects/${run.project_id}`}
+                            className="flex items-center gap-1 px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-bold transition-all text-xs shadow-xs"
+                          >
+                            Project Details <ArrowRight size={13} />
+                          </Link>
+                        </div>
+                      </div>
+
+                      {/* Error Banner if Failed */}
+                      {run.error_message && (
+                        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs flex items-start gap-2">
+                          <AlertTriangle size={15} className="text-rose-600 flex-shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-bold">Execution Error Details</div>
+                            <div className="font-mono mt-0.5">{run.error_message}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Discovered Specs & Details */}
+                      {run.openapi_found && run.openapi_url && (
+                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle size={15} className="text-emerald-600 flex-shrink-0" />
+                            <span>OpenAPI Specification Detected: <strong className="font-mono">{run.openapi_url}</strong></span>
+                          </div>
+                          <a
+                            href={run.openapi_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-bold underline text-emerald-900 text-xs"
+                          >
+                            Open Spec ↗
+                          </a>
+                        </div>
+                      )}
+
+                      {/* Progress State (if Running / Queued) */}
+                      {run.progress_state && (
+                        <div className="p-3 bg-white border border-slate-200 rounded-xl">
+                          <div className="font-bold text-slate-700 mb-1 text-[11px] uppercase tracking-wider">Engine State</div>
+                          <div className="text-slate-600 font-mono text-[11px]">
+                            Step: <strong className="text-blue-600">{run.progress_state.step}</strong> · Updated {formatDate(run.progress_state.timestamp)}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
     </div>
   );

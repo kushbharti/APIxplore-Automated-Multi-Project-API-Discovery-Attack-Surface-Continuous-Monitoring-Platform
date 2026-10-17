@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -36,63 +37,58 @@ logger = structlog.get_logger(__name__)
 _MAX_JS_SIZE = 2 * 1024 * 1024
 
 # Maximum number of JS files to analyze per discovery run
-_MAX_JS_FILES = 20
+_MAX_JS_FILES = 25
 
-# Regex patterns for API endpoint extraction
+# Regex patterns for API endpoint extraction (supports relative paths and absolute backend URLs)
 _PATTERNS: list[re.Pattern] = [
-    # fetch("...") / fetch('...')
-    re.compile(r"""fetch\s*\(\s*['"`]([/][^'"`\s]{1,500})['"`]"""),
+    # fetch("/api/...") / fetch('...')
+    re.compile(r"""fetch\s*\(\s*['"`]((?:/|https?://)[^'"`\s]{1,500})['"`]"""),
     # axios.get/post/put/patch/delete("...")
-    re.compile(r"""axios\s*\.\s*(?:get|post|put|patch|delete|head)\s*\(\s*['"`]([/][^'"`\s]{1,500})['"`]""", re.IGNORECASE),
+    re.compile(r"""axios\s*\.\s*(?:get|post|put|patch|delete|head)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]{1,500})['"`]""", re.IGNORECASE),
     # $http.get/post("...")  (AngularJS)
-    re.compile(r"""\$http\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['"`]([/][^'"`\s]{1,500})['"`]""", re.IGNORECASE),
+    re.compile(r"""\$http\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]{1,500})['"`]""", re.IGNORECASE),
     # Vue/React api calls
-    re.compile(r"""api\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['"`]([/][^'"`\s]{1,500})['"`]""", re.IGNORECASE),
-    # Direct string literals that look like API paths
-    re.compile(r"""['"\`](/api/[^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""['"\`](/v\d+/[^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""['"\`](/rest/[^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""['"\`](/graphql[^'"\`\s]{0,200})['"\`]"""),
+    re.compile(r"""api\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]{1,500})['"`]""", re.IGNORECASE),
+    # Direct string literals that look like API paths or API URLs
+    re.compile(r"""['"\`]((?:/api/|https?://[^'"\`\s]+/api/)[^'"\`\s]{1,500})['"\`]"""),
+    re.compile(r"""['"\`]((?:/v\d+/|https?://[^'"\`\s]+/v\d+/)[^'"\`\s]{1,500})['"\`]"""),
+    re.compile(r"""['"\`]((?:/rest/|https?://[^'"\`\s]+/rest/)[^'"\`\s]{1,500})['"\`]"""),
+    re.compile(r"""['"\`]((?:/graphql|https?://[^'"\`\s]+/graphql)[^'"\`\s]{0,200})['"\`]"""),
 
     # XMLHttpRequest patterns
-    re.compile(r"""XMLHttpRequest[^;]{0,200}open\s*\(\s*['"](?:GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*['"`]([/][^'"\`\s]{1,500})['"`]""", re.IGNORECASE),
-    re.compile(r"""\.open\s*\(\s*['"](?:GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*['"`]([/][^'"\`\s]{1,500})['"`]""", re.IGNORECASE),
+    re.compile(r"""XMLHttpRequest[^;]{0,200}open\s*\(\s*['"](?:GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*['"`]((?:/|https?://)[^'"\`\s]{1,500})['"`]""", re.IGNORECASE),
+    re.compile(r"""\.open\s*\(\s*['"](?:GET|POST|PUT|PATCH|DELETE)['"]\s*,\s*['"`]((?:/|https?://)[^'"\`\s]{1,500})['"`]""", re.IGNORECASE),
 
-    # SPA and client-side routing patterns
-    re.compile(r"""navigate\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""router\.push\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""router\.replace\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""\$router\.push\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-
-    # Window location assignments
-    re.compile(r"""window\.location\.href\s*=\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""window\.location\.assign\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""window\.location\.replace\s*\(\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""location\.href\s*=\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-
-    # href / url assignments
-    re.compile(r"""href\s*[:=]\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
-    re.compile(r"""url\s*[:=]\s*['"\`]([/][^'"\`\s]{1,500})['"\`]"""),
+    # API request configuration properties (url / endpoint / path) that look like API routes
+    re.compile(r"""(?:url|endpoint|path)\s*[:=]\s*['"\`]((?:/|https?://)(?:api/|v\d+/|rest/|graphql/|[a-zA-Z0-9_.-]{2,}/)[^'"\`\s]*)['"\`]""", re.IGNORECASE),
 ]
 
 # Method extraction alongside the URL
 _METHOD_WITH_URL_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("GET", re.compile(r"""(?:fetch|axios\.get|api\.get|\$http\.get)\s*\(\s*['"`]([/][^'"`\s]+)['"`]""", re.IGNORECASE)),
-    ("POST", re.compile(r"""(?:axios\.post|api\.post|\$http\.post)\s*\(\s*['"`]([/][^'"`\s]+)['"`]""", re.IGNORECASE)),
-    ("PUT", re.compile(r"""(?:axios\.put|api\.put|\$http\.put)\s*\(\s*['"`]([/][^'"`\s]+)['"`]""", re.IGNORECASE)),
-    ("PATCH", re.compile(r"""(?:axios\.patch|api\.patch|\$http\.patch)\s*\(\s*['"`]([/][^'"`\s]+)['"`]""", re.IGNORECASE)),
-    ("DELETE", re.compile(r"""(?:axios\.delete|api\.delete|\$http\.delete)\s*\(\s*['"`]([/][^'"`\s]+)['"`]""", re.IGNORECASE)),
+    # fetch with options method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+    ("POST", re.compile(r"""fetch\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`][^,)]*,\s*\{[^}]*?method\s*:\s*['"]POST['"]""", re.IGNORECASE)),
+    ("PUT", re.compile(r"""fetch\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`][^,)]*,\s*\{[^}]*?method\s*:\s*['"]PUT['"]""", re.IGNORECASE)),
+    ("PATCH", re.compile(r"""fetch\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`][^,)]*,\s*\{[^}]*?method\s*:\s*['"]PATCH['"]""", re.IGNORECASE)),
+    ("DELETE", re.compile(r"""fetch\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`][^,)]*,\s*\{[^}]*?method\s*:\s*['"]DELETE['"]""", re.IGNORECASE)),
+    # Client method shortcuts
+    ("POST", re.compile(r"""(?:axios\.post|api\.post|\$http\.post)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`]""", re.IGNORECASE)),
+    ("PUT", re.compile(r"""(?:axios\.put|api\.put|\$http\.put)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`]""", re.IGNORECASE)),
+    ("PATCH", re.compile(r"""(?:axios\.patch|api\.patch|\$http\.patch)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`]""", re.IGNORECASE)),
+    ("DELETE", re.compile(r"""(?:axios\.delete|api\.delete|\$http\.delete)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`]""", re.IGNORECASE)),
+    # GET queries
+    ("GET", re.compile(r"""(?:fetch|axios\.get|api\.get|\$http\.get)\s*\(\s*['"`]((?:/|https?://)[^'"`\s]+)['"`]""", re.IGNORECASE)),
 ]
 
 # Skip these paths — they're almost certainly assets, not APIs
 _SKIP_PATH_PATTERNS = [
-    re.compile(r"\.(css|js|png|jpg|jpeg|gif|svg|ico|woff|ttf|eot|html|htm|txt|pdf)$", re.IGNORECASE),
+    re.compile(r"\.(css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|html|htm|txt|pdf|map|jsonld)$", re.IGNORECASE),
     re.compile(r"^/static/"),
     re.compile(r"^/assets/"),
     re.compile(r"^/public/"),
     re.compile(r"^/images?/"),
     re.compile(r"^/fonts?/"),
     re.compile(r"^/icons?/"),
+    re.compile(r"^/favicon"),
 ]
 
 
@@ -113,7 +109,27 @@ class JSAnalysisResult:
 
 def _should_skip_path(path: str) -> bool:
     """Return True if this path should not be treated as an API endpoint."""
-    return any(p.search(path) for p in _SKIP_PATH_PATTERNS)
+    if not path or path in ("/", "#", "/#", "javascript:void(0)", "void(0)"):
+        return True
+    if path.startswith(("http://", "https://")):
+        try:
+            parsed = urlparse(path)
+            if not parsed.netloc:
+                return True
+            check_path = parsed.path
+        except Exception:
+            return True
+    else:
+        check_path = path
+
+    cleaned = check_path.strip("/")
+    # Filter out single-letter or empty paths (e.g. /a, /b, /x)
+    if len(cleaned) < 2:
+        return True
+    if len(cleaned) == 2 and cleaned not in ("me", "ip", "id", "ws", "ui"):
+        return True
+
+    return any(p.search(check_path) for p in _SKIP_PATH_PATTERNS)
 
 
 def _extract_from_js(content: str) -> list[JSEndpoint]:

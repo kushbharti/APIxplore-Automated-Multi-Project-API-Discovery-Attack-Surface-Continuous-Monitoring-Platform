@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Globe, RefreshCw, Activity, CheckCircle2, XCircle, Search,
-  FileCode2, Clock, Code2, ArrowLeft, Zap, Shield, Play,
-  GitBranch, Server, Info, Settings, Trash2, Lock,
-} from 'lucide-react';
+  FileCode2, Clock, Code2, ArrowLeft, Zap, Shield, ShieldCheck, AlertCircle, Play,
+  GitBranch, Server, Info, Settings, Trash2, Lock, ExternalLink
+} from '../components/icons';
 import { apiFetch } from '../lib/api';
 import type { Project, DiscoveryRun, DiscoveryCandidate, Endpoint } from '../types';
-import { formatDate, formatRelative, formatLatency } from '../utils/date';
 import { Pagination } from '../components/Pagination';
+import { formatTime } from '../utils/date';
 
 /* ── Method badge ────────────────────────────────────────── */
 function MethodBadge({ method }: { method: string }) {
@@ -120,20 +120,20 @@ function StepTracker({ run }: { run: DiscoveryRun }) {
       id: 'openapi',
       icon: <FileCode2 size={16} />,
       title: 'OpenAPI Spec Detection',
-      desc: isActive(['URL_VALIDATION', 'OPENAPI_DETECTION']) 
-        ? (progressDetails?.status ? `Status: ${progressDetails.status}` : 'Validating URL...')
+      desc: isActive(['URL_VALIDATION', 'OPENAPI_DETECTION', 'OPENAPI_AND_CRAWL']) 
+        ? (progressDetails?.status ? `Status: ${progressDetails.status}` : 'Probing OpenAPI & Swagger specs...')
         : 'Scanning common spec paths: /openapi.json, /swagger.json, /docs',
       status: run.openapi_checked
         ? 'completed'
-        : isActive(['URL_VALIDATION', 'OPENAPI_DETECTION'])
+        : isActive(['URL_VALIDATION', 'OPENAPI_DETECTION', 'OPENAPI_AND_CRAWL'])
         ? 'active'
         : isFailed
         ? 'error'
         : 'pending',
       result: run.openapi_checked
         ? run.openapi_found
-          ? `✓ Found spec at ${run.openapi_url ?? 'unknown'}`
-          : '✗ No OpenAPI spec found — falling back to crawler'
+          ? `✓ Found spec at ${run.openapi_url ?? 'detected location'}`
+          : '✓ Checked — No OpenAPI spec found (crawling site)'
         : undefined,
     },
     {
@@ -142,7 +142,7 @@ function StepTracker({ run }: { run: DiscoveryRun }) {
       title: 'Website Crawler',
       desc: isActive(['CRAWLING']) && progressDetails
         ? `Pages visited: ${progressDetails.pages_visited ?? 0} | Queue: ${progressDetails.queue_size ?? 0}`
-        : 'BFS crawl (depth 2, max 50 pages) — following same-domain links',
+        : 'BFS crawl (depth 3, max 80 pages) — following same-domain links, robots.txt & sitemap seeds',
       status: run.crawl_checked
         ? 'completed'
         : isActive(['CRAWLING'])
@@ -230,20 +230,23 @@ function StepTracker({ run }: { run: DiscoveryRun }) {
 
 /* ── Stat box ────────────────────────────────────────────── */
 function StatBox({
-  label, value, color, sub
-}: { label: string; value: number | string; color?: string; sub?: string }) {
+  label, value, color, sub, isDark
+}: { label: string; value: number | string; color?: string; sub?: string; isDark?: boolean }) {
   return (
     <div
-      className="rounded-xl p-4"
-      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)' }}
+      className={`rounded-xl p-3.5 sm:p-4 transition-all duration-200 ${
+        isDark 
+          ? 'bg-white/[0.08] hover:bg-white/[0.12] border border-white/10 shadow-inner' 
+          : 'bg-white hover:bg-slate-50 border border-slate-200 shadow-xs'
+      }`}
     >
-      <div className="text-[10px] uppercase font-semibold tracking-widest mb-1" style={{ color: 'var(--muted)' }}>
+      <div className={`text-[10px] sm:text-[11px] uppercase font-bold tracking-wider mb-1 ${isDark ? 'text-slate-300' : 'text-slate-400'}`}>
         {label}
       </div>
-      <div className="text-2xl font-bold stat-counter" style={{ color: color ?? 'var(--text-primary)' }}>
+      <div className="text-2xl sm:text-3xl font-extrabold tracking-tight font-display" style={{ color: color ?? (isDark ? '#ffffff' : '#0f172a') }}>
         {value}
       </div>
-      {sub && <div className="text-[10px] mt-0.5" style={{ color: 'var(--muted)' }}>{sub}</div>}
+      {sub && <div className={`text-[10px] mt-0.5 ${isDark ? 'text-slate-400' : 'text-slate-400'}`}>{sub}</div>}
     </div>
   );
 }
@@ -256,8 +259,10 @@ export const ProjectDetails = () => {
   const [activeTab, setActiveTab] = useState<'endpoints' | 'discovery'>('endpoints');
   const [filterSource, setFilterSource] = useState<string>('ALL');
   const [filterMethod, setFilterMethod] = useState<string>('ALL');
+  const [filterVerification, setFilterVerification] = useState<string>('ALL');
   const [selectedCandidates, setSelectedCandidates] = useState<Set<string>>(new Set());
   const [isAccepting, setIsAccepting] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [checkInterval, setCheckInterval] = useState<number>(60);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState('');
@@ -333,11 +338,23 @@ export const ProjectDetails = () => {
     } catch (e) { console.error(e); }
   };
 
+  /* ── Filtered & Selectable candidates ── */
+  const isCandidateSelectable = (c: DiscoveryCandidate) =>
+    !c.accepted && !['WEB_PAGE', 'INVALID', 'BLOCKED'].includes(c.verification_status);
+
+  const filteredCandidates = candidates?.filter(c => {
+    const mthOk = filterMethod === 'ALL' || c.method === filterMethod;
+    const verOk = filterVerification === 'ALL' || c.verification_status === filterVerification;
+    return mthOk && verOk;
+  });
+  const selectableCandidates = filteredCandidates?.filter(isCandidateSelectable) ?? [];
+
   const handleAcceptSelected = async () => {
     if (!latestRun?.id || selectedCandidates.size === 0) return;
     setIsAccepting(true);
+    setActionFeedback(null);
     try {
-      await apiFetch(`/discovery/${latestRun.id}/accept`, {
+      const res = await apiFetch<{ created: number; skipped: number; total: number }>(`/discovery/${latestRun.id}/accept`, {
         method: 'POST',
         body: JSON.stringify({
           candidate_ids: Array.from(selectedCandidates),
@@ -345,15 +362,26 @@ export const ProjectDetails = () => {
           failure_threshold: 3,
           latency_threshold_ms: 2000,
           timeout_ms: 5000,
-          enabled: true
+          enabled: true,
         }),
       });
       setSelectedCandidates(new Set());
-      queryClient.invalidateQueries({ queryKey: ['discovery-candidates', latestRun.id] });
+      queryClient.invalidateQueries({ queryKey: ['discovery-candidates'] });
       queryClient.invalidateQueries({ queryKey: ['projects', id, 'endpoints'] });
       queryClient.invalidateQueries({ queryKey: ['projects', id] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['endpoints'] });
+
+      const created = res?.created ?? 0;
+      const skipped = res?.skipped ?? 0;
+      let msg = `Successfully added ${created} endpoint${created !== 1 ? 's' : ''} to monitoring.`;
+      if (skipped > 0) {
+        msg += ` (${skipped} already monitored or duplicate skipped)`;
+      }
+      setActionFeedback({ type: 'success', message: msg });
     } catch (e: any) {
       console.error('Failed to accept candidates:', e.message);
+      setActionFeedback({ type: 'error', message: e?.message || 'Failed to add endpoints to monitoring.' });
     } finally {
       setIsAccepting(false);
     }
@@ -370,15 +398,12 @@ export const ProjectDetails = () => {
   };
 
   const toggleAllCandidates = () => {
-    if (!filteredCandidates) return;
-    
-    // Only select verified candidates that are not yet accepted
-    const verifiableCandidates = filteredCandidates.filter(c => c.verification_status === 'VERIFIED' && !c.accepted);
-    
-    if (selectedCandidates.size === verifiableCandidates.length) {
+    if (!selectableCandidates.length) return;
+    const allSelected = selectableCandidates.length > 0 && selectableCandidates.every(c => selectedCandidates.has(c.id));
+    if (allSelected) {
       setSelectedCandidates(new Set());
     } else {
-      setSelectedCandidates(new Set(verifiableCandidates.map(c => c.id)));
+      setSelectedCandidates(new Set(selectableCandidates.map(c => c.id)));
     }
   };
 
@@ -418,116 +443,111 @@ export const ProjectDetails = () => {
     </div>
   );
 
-  /* ── Filtered candidates ── */
-  const filteredCandidates = candidates?.filter(c => {
-    // Note: source filtering is now handled partially by the backend, 
-    // but we can still filter by method client-side since the backend doesn't support method filtering.
-    const mthOk = filterMethod === 'ALL' || c.method === filterMethod;
-    return mthOk;
-  });
-
   /* ── Render ── */
   return (
-    <div className="flex flex-col gap-6 max-w-6xl mx-auto pb-12">
+    <div className="flex flex-col gap-6 max-w-7xl mx-auto pb-12 w-full">
 
       {/* ── Back nav ── */}
       <button
-        onClick={() => navigate('/')}
-        className="inline-flex items-center gap-2 text-sm w-fit transition-colors"
-        style={{ color: 'var(--muted)' }}
-        onMouseEnter={e => (e.currentTarget.style.color = 'var(--text-primary)')}
-        onMouseLeave={e => (e.currentTarget.style.color = 'var(--muted)')}
+        onClick={() => navigate('/projects')}
+        className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-blue-600 transition-colors w-fit -mb-2"
       >
-        <ArrowLeft size={16} /> Back to Dashboard
+        <ArrowLeft size={15} /> Back to Projects
       </button>
 
       {/* ── Project header ── */}
       <div
-        className="rounded-2xl p-6 relative overflow-hidden"
+        className="rounded-2xl p-6 sm:p-7 relative overflow-hidden text-white"
         style={{
-          background: 'linear-gradient(135deg, rgba(12,12,28,0.95), rgba(18,12,40,0.95))',
-          border: '1px solid rgba(99,102,241,0.2)',
-          boxShadow: '0 8px 40px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05)',
+          background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f1d40 100%)',
+          border: '1px solid rgba(59, 130, 246, 0.25)',
+          boxShadow: '0 12px 36px -10px rgba(15, 23, 42, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset',
         }}
       >
-        {/* BG decoration */}
+        {/* Glow & ambient circles */}
         <div
-          className="absolute top-0 right-0 w-64 h-64 rounded-full -mr-20 -mt-20 opacity-10"
-          style={{ background: 'radial-gradient(circle, var(--primary) 0%, transparent 70%)' }}
+          className="absolute -top-24 -right-24 w-80 h-80 rounded-full opacity-20 pointer-events-none blur-3xl"
+          style={{ background: 'radial-gradient(circle, #3b82f6 0%, transparent 70%)' }}
         />
         <Globe
-          size={120}
-          className="absolute top-4 right-8 opacity-5 animate-float"
+          size={140}
+          className="absolute -bottom-8 -right-8 opacity-5 text-blue-400 pointer-events-none animate-float"
         />
 
         <div className="relative z-10">
-          <div className="flex items-start justify-between flex-wrap gap-4 mb-4">
-            <div>
-              <div className="flex items-center gap-3 mb-1">
-                <h1 className="text-2xl font-bold text-white">{project.name}</h1>
+          <div className="flex items-start justify-between flex-wrap gap-4 mb-6">
+            <div className="min-w-0 max-w-full sm:max-w-xl">
+              <div className="flex items-center gap-3 mb-2 flex-wrap">
+                <h1 className="text-xl sm:text-2xl font-bold font-display text-white tracking-tight break-all">
+                  {project.name}
+                </h1>
                 <span
-                  className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-lg ${
-                    project.status === 'HEALTHY'  ? 'text-[var(--success)]' :
-                    project.status === 'DEGRADED' ? 'text-[var(--warning)]' :
-                    project.status === 'DOWN'     ? 'text-[var(--error)]'   :
-                    'text-[var(--muted)]'
-                  }`}
+                  className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full flex items-center gap-1.5"
                   style={{
-                    background: project.status === 'HEALTHY'  ? 'var(--success-transparent)' :
-                                project.status === 'DEGRADED' ? 'var(--warning-transparent)' :
-                                project.status === 'DOWN'     ? 'var(--error-transparent)'   :
-                                'rgba(100,100,130,0.12)',
-                    border: `1px solid ${
-                      project.status === 'HEALTHY'  ? 'rgba(16,185,129,0.3)' :
-                      project.status === 'DEGRADED' ? 'rgba(245,158,11,0.3)' :
-                      project.status === 'DOWN'     ? 'rgba(239,68,68,0.3)' :
-                      'rgba(100,100,130,0.3)'
-                    }`
+                    color: project.status === 'HEALTHY' ? '#34d399' : project.status === 'DEGRADED' ? '#fbbf24' : project.status === 'DOWN' ? '#f87171' : '#94a3b8',
+                    background: project.status === 'HEALTHY' ? 'rgba(52, 211, 153, 0.15)' : project.status === 'DEGRADED' ? 'rgba(251, 191, 36, 0.15)' : project.status === 'DOWN' ? 'rgba(248, 113, 113, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                    border: `1px solid ${project.status === 'HEALTHY' ? 'rgba(52, 211, 153, 0.3)' : project.status === 'DEGRADED' ? 'rgba(251, 191, 36, 0.3)' : project.status === 'DOWN' ? 'rgba(248, 113, 113, 0.3)' : 'rgba(148, 163, 184, 0.3)'}`,
                   }}
                 >
-                  {project.status}
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{
+                      backgroundColor: project.status === 'HEALTHY' ? '#34d399' : project.status === 'DEGRADED' ? '#fbbf24' : project.status === 'DOWN' ? '#f87171' : '#94a3b8'
+                    }}
+                  />
+                  {project.status || 'UNKNOWN'}
                 </span>
               </div>
-              <div className="flex items-center gap-2" style={{ color: 'var(--muted)' }}>
-                <Globe size={13} />
-                <span className="text-sm font-mono">{project.url}</span>
+
+              <div className="flex items-center gap-2 text-slate-300 text-xs sm:text-sm">
+                <Globe size={14} className="text-blue-400 flex-shrink-0" />
+                <a
+                  href={project.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-slate-300 hover:text-white underline underline-offset-4 decoration-slate-600 hover:decoration-blue-400 transition-colors truncate max-w-[280px] sm:max-w-md inline-flex items-center gap-1"
+                  title={project.url}
+                >
+                  <span>{project.url}</span>
+                  <ExternalLink size={12} className="opacity-70 flex-shrink-0" />
+                </a>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => {
                   setEditName(project.name);
                   setEditUrl(project.url);
                   setIsEditing(true);
                 }}
-                className="p-2.5 rounded-xl transition-all"
-                style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}
-                onMouseEnter={e => e.currentTarget.style.color = 'var(--text-primary)'}
-                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-secondary)'}
+                className="p-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-300 hover:text-white border border-white/10 transition-all"
                 title="Edit Project"
               >
-                <Settings size={15} />
+                <Settings size={16} />
               </button>
               <button
                 onClick={handleDeleteProject}
-                className="p-2.5 rounded-xl transition-all"
-                style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--error)' }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--error-transparent)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+                className="p-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 border border-rose-500/20 transition-all"
                 title="Delete Project"
               >
-                <Trash2 size={15} />
+                <Trash2 size={16} />
               </button>
               <button
                 onClick={handleStartDiscovery}
                 disabled={isDiscovering}
-                className="btn-primary px-5 py-2.5 text-sm flex items-center gap-2 ml-2"
+                className="btn-primary px-4 py-2.5 text-xs sm:text-sm font-semibold flex items-center gap-2 shadow-lg"
               >
                 {isDiscovering ? (
-                  <><RefreshCw size={15} className="animate-spin" /> Discovering…</>
+                  <>
+                    <RefreshCw size={14} className="animate-spin text-white" />
+                    <span>Discovering…</span>
+                  </>
                 ) : (
-                  <><Play size={15} /> Run Discovery</>
+                  <>
+                    <Play size={14} className="text-white" />
+                    <span>Run Discovery</span>
+                  </>
                 )}
               </button>
             </div>
@@ -535,48 +555,48 @@ export const ProjectDetails = () => {
 
           {/* Stat row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <StatBox label="Monitored" value={project.endpoint_count} color="var(--text-primary)" />
-            <StatBox label="Healthy"   value={project.healthy_count}  color="var(--success)" />
-            <StatBox label="Degraded"  value={project.degraded_count} color="var(--warning)" />
-            <StatBox label="Down"      value={project.down_count}     color={project.down_count > 0 ? 'var(--error)' : 'var(--muted)'} />
+            <StatBox label="Monitored" value={project.endpoint_count} isDark />
+            <StatBox label="Healthy"   value={project.healthy_count}  color="#34d399" isDark />
+            <StatBox label="Degraded"  value={project.degraded_count} color="#fbbf24" isDark />
+            <StatBox label="Down"      value={project.down_count}     color={project.down_count > 0 ? '#f87171' : '#94a3b8'} isDark />
           </div>
         </div>
       </div>
 
       {isEditing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in">
-          <div className="bg-[var(--bg-card)] border border-[var(--border-color)] rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h3 className="text-lg font-bold mb-4">Edit Project</h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <h3 className="text-lg font-bold mb-4 text-slate-900 font-display">Edit Project</h3>
             <div className="flex flex-col gap-4">
               <div>
-                <label className="text-xs font-semibold text-[var(--muted)] mb-1 block">Project Name</label>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Project Name</label>
                 <input
                   type="text"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  className="w-full bg-[rgba(255,255,255,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--primary)] transition-colors"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-600 focus:bg-white transition-colors"
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-[var(--muted)] mb-1 block">Project URL</label>
+                <label className="text-xs font-bold text-slate-500 mb-1 block">Project URL</label>
                 <input
                   type="url"
                   value={editUrl}
                   onChange={e => setEditUrl(e.target.value)}
-                  className="w-full bg-[rgba(255,255,255,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-[var(--text-primary)] font-mono outline-none focus:border-[var(--primary)] transition-colors"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-900 font-mono outline-none focus:border-blue-600 focus:bg-white transition-colors"
                 />
               </div>
             </div>
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={() => setIsEditing(false)}
-                className="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                className="px-4 py-2 text-sm text-slate-600 hover:text-slate-900 transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={handleEditProject}
-                className="btn-primary px-5 py-2 text-sm rounded-xl"
+                className="btn-primary px-5 py-2 text-sm rounded-xl font-semibold"
               >
                 Save Changes
               </button>
@@ -585,17 +605,19 @@ export const ProjectDetails = () => {
         </div>
       )}
 
-      {/* ── Tab bar ── */}
+      {/* ── Tab bar (Segmented Control) ── */}
       <div className="tab-bar">
         <button
           onClick={() => setActiveTab('endpoints')}
           className={`tab-item ${activeTab === 'endpoints' ? 'active' : ''}`}
         >
-          <Activity size={15} /> Monitored Endpoints
+          <Activity size={15} />
+          <span>Monitored Endpoints</span>
           {endpoints && endpoints.length > 0 && (
             <span
-              className="text-[10px] font-bold px-1.5 py-0.5 rounded-md ml-1"
-              style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-secondary)' }}
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                activeTab === 'endpoints' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'
+              }`}
             >
               {endpoints.length}
             </span>
@@ -605,17 +627,19 @@ export const ProjectDetails = () => {
           onClick={() => setActiveTab('discovery')}
           className={`tab-item ${activeTab === 'discovery' ? 'active' : ''}`}
         >
-          <Search size={15} /> Discovery Engine
+          <Search size={15} />
+          <span>Discovery Engine</span>
           {isDiscovering && (
-            <span className="flex h-1.5 w-1.5 ml-1 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: 'var(--primary)' }} />
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ background: 'var(--primary)' }} />
+            <span className="flex h-2 w-2 relative ml-0.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600" />
             </span>
           )}
           {candidates && candidates.length > 0 && !isDiscovering && (
             <span
-              className="text-[10px] font-bold px-1.5 py-0.5 rounded-md ml-1"
-              style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-secondary)' }}
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                activeTab === 'discovery' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-600'
+              }`}
             >
               {candidates.length}
             </span>
@@ -627,114 +651,119 @@ export const ProjectDetails = () => {
       {activeTab === 'endpoints' && (
         <div className="flex flex-col gap-4 animate-fade-in">
           <div className="flex justify-between items-center">
-            <h3 className="font-semibold text-base flex items-center gap-2">
-              <Shield size={16} style={{ color: 'var(--primary-light)' }} />
+            <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+              <Shield size={16} className="text-blue-600" />
               Active Monitoring
             </h3>
-            <span className="text-sm" style={{ color: 'var(--muted)' }}>
+            <span className="text-xs text-slate-400 font-medium">
               {endpoints?.length ?? 0} endpoint{endpoints?.length !== 1 ? 's' : ''} tracked
             </span>
           </div>
 
-          <div
-            className="rounded-2xl overflow-hidden"
-            style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}
-          >
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
             {endpoints?.length === 0 ? (
               <div className="py-16 text-center">
-                <Server size={36} className="mx-auto mb-3 opacity-30" />
-                <p className="font-medium mb-1">No endpoints monitored yet</p>
-                <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                  Run Discovery to find endpoints, then accept them to start monitoring.
+                <Server size={36} className="mx-auto mb-3 text-slate-300" />
+                <p className="font-semibold text-slate-700 mb-1">No endpoints monitored yet</p>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto mb-4">
+                  Run Discovery to find endpoints automatically, then accept them into your monitoring pipeline.
                 </p>
+                <button
+                  onClick={handleStartDiscovery}
+                  disabled={isDiscovering}
+                  className="btn-primary px-4 py-2 text-xs font-semibold"
+                >
+                  <Play size={14} /> Run Discovery
+                </button>
               </div>
             ) : (
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-color)' }}>
-                    {['Method & Path', 'Health', 'Source', 'Last Checked', 'Monitoring'].map(h => (
-                      <th key={h} className="px-5 py-3 text-[11px] font-semibold uppercase tracking-widest" style={{ color: 'var(--muted)' }}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {endpoints?.map(ep => (
-                    <tr 
-                      key={ep.id} 
-                      className="data-row cursor-pointer"
-                      onClick={(e) => {
-                        if (!(e.target as HTMLElement).closest('button')) {
-                          navigate(`/endpoints/${ep.id}`);
-                        }
-                      }}
-                    >
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-3">
-                          <MethodBadge method={ep.method} />
-                          <span
-                            className="font-mono text-sm max-w-[240px] truncate"
-                            title={ep.path || ep.url}
-                            style={{ color: 'var(--text-primary)' }}
-                          >
-                            {ep.path || ep.url}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <span
-                          className="text-[11px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md"
-                          style={{
-                            color: ep.health_state === 'HEALTHY' ? 'var(--success)'
-                              : ep.health_state === 'DEGRADED' ? 'var(--warning)'
-                              : ep.health_state === 'DOWN' ? 'var(--error)'
-                              : 'var(--muted)',
-                            background: ep.health_state === 'HEALTHY' ? 'var(--success-transparent)'
-                              : ep.health_state === 'DEGRADED' ? 'var(--warning-transparent)'
-                              : ep.health_state === 'DOWN' ? 'var(--error-transparent)'
-                              : 'rgba(100,100,130,0.12)',
-                            border: `1px solid ${
-                              ep.health_state === 'HEALTHY' ? 'rgba(16,185,129,0.3)'
-                              : ep.health_state === 'DEGRADED' ? 'rgba(245,158,11,0.3)'
-                              : ep.health_state === 'DOWN' ? 'rgba(239,68,68,0.3)'
-                              : 'rgba(100,100,130,0.3)'
-                            }`
-                          }}
-                        >
-                          {ep.health_state}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <SourceChip source={ep.discovery_source} />
-                      </td>
-                      <td className="px-5 py-3.5">
-                        {ep.last_checked_at ? (
-                          <span className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--muted)' }}>
-                            <Clock size={12} />
-                            {new Date(ep.last_checked_at).toLocaleTimeString()}
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--muted)' }}>—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <button
-                          onClick={() => handleToggleMonitoring(ep.id, !ep.enabled)}
-                          className="relative inline-flex h-5 w-9 items-center rounded-full transition-all duration-300"
-                          style={{ background: ep.enabled ? 'var(--primary)' : 'rgba(255,255,255,0.1)' }}
-                          title={ep.enabled ? 'Disable monitoring' : 'Enable monitoring'}
-                        >
-                          <span
-                            className="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-300 shadow"
-                            style={{ transform: ep.enabled ? 'translateX(18px)' : 'translateX(2px)' }}
-                          />
-                        </button>
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200">
+                      {['Method & Path', 'Health', 'Source', 'Last Checked', 'Monitoring'].map(h => (
+                        <th key={h} className="px-5 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">
+                          {h}
+                        </th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {endpoints?.map(ep => (
+                      <tr 
+                        key={ep.id} 
+                        className="data-row cursor-pointer"
+                        onClick={(e) => {
+                          if (!(e.target as HTMLElement).closest('button')) {
+                            navigate(`/endpoints/${ep.id}`);
+                          }
+                        }}
+                      >
+                        <td className="px-5 py-3.5">
+                          <div className="flex items-center gap-3">
+                            <MethodBadge method={ep.method} />
+                            <span
+                              className="font-mono text-xs font-semibold text-slate-800 max-w-[240px] truncate"
+                              title={ep.path || ep.url}
+                            >
+                              {ep.path || ep.url}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <span
+                            className="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md"
+                            style={{
+                              color: ep.health_state === 'HEALTHY' ? 'var(--success)'
+                                : ep.health_state === 'DEGRADED' ? 'var(--warning)'
+                                : ep.health_state === 'DOWN' ? 'var(--error)'
+                                : 'var(--muted)',
+                              background: ep.health_state === 'HEALTHY' ? 'var(--success-transparent)'
+                                : ep.health_state === 'DEGRADED' ? 'var(--warning-transparent)'
+                                : ep.health_state === 'DOWN' ? 'var(--error-transparent)'
+                                : 'rgba(100,100,130,0.12)',
+                              border: `1px solid ${
+                                ep.health_state === 'HEALTHY' ? 'rgba(16,185,129,0.3)'
+                                : ep.health_state === 'DEGRADED' ? 'rgba(245,158,11,0.3)'
+                                : ep.health_state === 'DOWN' ? 'rgba(239,68,68,0.3)'
+                                : 'rgba(100,100,130,0.3)'
+                              }`
+                            }}
+                          >
+                            {ep.health_state}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <SourceChip source={ep.discovery_source} />
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {ep.last_checked_at ? (
+                            <span className="flex items-center gap-1.5 text-xs text-slate-500">
+                              <Clock size={12} className="text-slate-400" />
+                              {formatTime(ep.last_checked_at)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-slate-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <button
+                            onClick={() => handleToggleMonitoring(ep.id, !ep.enabled)}
+                            className="relative inline-flex h-5 w-9 items-center rounded-full transition-all duration-300"
+                            style={{ background: ep.enabled ? '#2563eb' : '#cbd5e1' }}
+                            title={ep.enabled ? 'Disable monitoring' : 'Enable monitoring'}
+                          >
+                            <span
+                              className="inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-300 shadow"
+                              style={{ transform: ep.enabled ? 'translateX(18px)' : 'translateX(2px)' }}
+                            />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -744,21 +773,15 @@ export const ProjectDetails = () => {
       {activeTab === 'discovery' && (
         <div className="flex flex-col gap-5 animate-fade-in">
           {!latestRun ? (
-            <div
-              className="text-center py-20 rounded-2xl"
-              style={{ background: 'var(--bg-card)', border: '1px dashed rgba(99,102,241,0.2)' }}
-            >
-              <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 animate-float"
-                style={{ background: 'var(--primary-transparent)', border: '1px solid rgba(99,102,241,0.2)' }}
-              >
-                <Search size={28} style={{ color: 'var(--primary-light)' }} />
+            <div className="bg-white border border-slate-200 rounded-2xl text-center py-20 px-4 shadow-xs">
+              <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 bg-blue-50 border border-blue-200/60 animate-float text-blue-600">
+                <Search size={28} />
               </div>
-              <h3 className="text-lg font-semibold mb-2">No Discovery Runs</h3>
-              <p className="text-sm mb-6 max-w-sm mx-auto" style={{ color: 'var(--text-secondary)' }}>
-                Start a discovery run to automatically find API endpoints in your project.
+              <h3 className="text-lg font-bold text-slate-900 mb-2 font-display">No Discovery Runs Yet</h3>
+              <p className="text-xs text-slate-500 mb-6 max-w-sm mx-auto">
+                Trigger a discovery run to automatically find, extract, and verify API endpoints from OpenAPI specs, web crawling, and JS bundles.
               </p>
-              <button onClick={handleStartDiscovery} className="btn-primary px-6 py-2.5 text-sm flex items-center gap-2 mx-auto">
+              <button onClick={handleStartDiscovery} className="btn-primary px-6 py-2.5 text-sm font-semibold flex items-center gap-2 mx-auto">
                 <Play size={15} /> Run Discovery Now
               </button>
             </div>
@@ -767,60 +790,55 @@ export const ProjectDetails = () => {
 
               {/* ── Left: Live Step Tracker ── */}
               <div className="lg:col-span-1">
-                <div
-                  className="rounded-2xl p-5 h-full"
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}
-                >
-                  <div className="flex items-center justify-between mb-5">
-                    <h3 className="font-semibold text-sm flex items-center gap-2">
-                      <GitBranch size={15} style={{ color: 'var(--primary-light)' }} />
+                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs h-full flex flex-col">
+                  <div className="flex items-center justify-between mb-5 pb-3 border-b border-slate-100">
+                    <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      <GitBranch size={16} className="text-blue-600" />
                       Discovery Pipeline
                     </h3>
                     <span
-                      className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md ${
-                        latestRun.status === 'COMPLETED' ? 'text-[var(--success)]' :
-                        latestRun.status === 'FAILED'    ? 'text-[var(--error)]'   :
-                        'text-[var(--primary-light)]'
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${
+                        latestRun.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                        latestRun.status === 'FAILED'    ? 'bg-rose-50 text-rose-700 border border-rose-200'   :
+                        'bg-blue-50 text-blue-700 border border-blue-200 animate-pulse'
                       }`}
-                      style={{
-                        background: latestRun.status === 'COMPLETED' ? 'var(--success-transparent)'
-                          : latestRun.status === 'FAILED' ? 'var(--error-transparent)'
-                          : 'var(--primary-transparent)',
-                        border: `1px solid ${
-                          latestRun.status === 'COMPLETED' ? 'rgba(16,185,129,0.3)'
-                          : latestRun.status === 'FAILED' ? 'rgba(239,68,68,0.3)'
-                          : 'rgba(99,102,241,0.3)'
-                        }`
-                      }}
                     >
                       {latestRun.status}
                     </span>
                   </div>
 
-                  <StepTracker run={latestRun} />
+                  <div className="flex-1">
+                    <StepTracker run={latestRun} />
+                  </div>
 
                   {/* Timing */}
-                  <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border-color)' }}>
-                    <div className="text-[10px] uppercase font-semibold tracking-widest mb-2" style={{ color: 'var(--muted)' }}>
-                      Run Info
+                  <div className="mt-4 pt-4 border-t border-slate-100">
+                    <div className="text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-400">
+                      Run Metrics
                     </div>
-                    <div className="flex flex-col gap-1.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    <div className="flex flex-col gap-1.5 text-xs text-slate-600">
                       <div className="flex items-center justify-between">
-                        <span style={{ color: 'var(--muted)' }}>Started</span>
-                        <span>{new Date(latestRun.created_at).toLocaleTimeString()}</span>
+                        <span className="text-slate-400">Started</span>
+                        <span className="font-medium text-slate-700">{formatTime(latestRun.created_at)}</span>
                       </div>
                       {latestRun.completed_at && (
                         <div className="flex items-center justify-between">
-                          <span style={{ color: 'var(--muted)' }}>Completed</span>
-                          <span>{new Date(latestRun.completed_at).toLocaleTimeString()}</span>
+                          <span className="text-slate-400">Completed</span>
+                          <span className="font-medium text-slate-700">{formatTime(latestRun.completed_at)}</span>
                         </div>
                       )}
                       {latestRun.openapi_url && (
                         <div className="flex items-center justify-between gap-2">
-                          <span style={{ color: 'var(--muted)' }}>Spec URL</span>
-                          <span className="font-mono truncate max-w-[120px] text-[var(--success)]" title={latestRun.openapi_url}>
+                          <span className="text-slate-400">Spec URL</span>
+                          <a
+                            href={latestRun.openapi_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-mono truncate max-w-[140px] text-emerald-700 hover:underline"
+                            title={latestRun.openapi_url}
+                          >
                             {latestRun.openapi_url}
-                          </span>
+                          </a>
                         </div>
                       )}
                     </div>
@@ -828,11 +846,8 @@ export const ProjectDetails = () => {
 
                   {/* Error */}
                   {latestRun.error_message && (
-                    <div
-                      className="mt-3 p-3 rounded-xl text-xs animate-fade-in"
-                      style={{ background: 'var(--error-transparent)', border: '1px solid rgba(239,68,68,0.25)', color: '#fca5a5' }}
-                    >
-                      <div className="flex items-center gap-1.5 mb-1 font-semibold" style={{ color: 'var(--error)' }}>
+                    <div className="mt-3 p-3 rounded-xl text-xs bg-rose-50 border border-rose-200 text-rose-800 animate-fade-in">
+                      <div className="flex items-center gap-1.5 mb-1 font-bold text-rose-700">
                         <Info size={12} /> Error
                       </div>
                       {latestRun.error_message}
@@ -853,178 +868,237 @@ export const ProjectDetails = () => {
 
               {/* ── Right: Candidates table ── */}
               <div className="lg:col-span-2 flex flex-col gap-4">
-                {/* Filter row */}
-                <div className="flex items-center gap-3 flex-wrap">
-                  <h3 className="font-semibold text-sm flex-1">Discovered Candidates</h3>
+                {/* Filter and actions bar */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-sm text-slate-900 mr-1">
+                      Discovered Candidates
+                    </h3>
 
-                  {/* Source filter */}
-                  <select
-                    value={filterSource}
-                    onChange={e => {
-                      setFilterSource(e.target.value);
-                      setCandidatePage(1);
-                    }}
-                    className="text-xs px-3 py-1.5 rounded-lg border-none outline-none cursor-pointer"
-                    style={{
-                      background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    <option value="ALL">All Sources</option>
-                    <option value="OPENAPI">OpenAPI</option>
-                    <option value="CRAWLER">Crawler</option>
-                    <option value="JAVASCRIPT">JavaScript</option>
-                  </select>
+                    {/* Source filter */}
+                    <select
+                      value={filterSource}
+                      onChange={e => {
+                        setFilterSource(e.target.value);
+                        setCandidatePage(1);
+                      }}
+                      className="text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold px-3 py-1.5 rounded-lg outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer transition-colors"
+                    >
+                      <option value="ALL">All Sources</option>
+                      <option value="OPENAPI">OpenAPI</option>
+                      <option value="CRAWLER">Crawler</option>
+                      <option value="JAVASCRIPT">JavaScript</option>
+                    </select>
 
-                  {/* Method filter */}
-                  <select
-                    value={filterMethod}
-                    onChange={e => setFilterMethod(e.target.value)}
-                    className="text-xs px-3 py-1.5 rounded-lg border-none outline-none cursor-pointer"
-                    style={{
-                      background: 'rgba(255,255,255,0.05)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    <option value="ALL">All Methods</option>
-                    {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
+                    {/* Method filter */}
+                    <select
+                      value={filterMethod}
+                      onChange={e => setFilterMethod(e.target.value)}
+                      className="text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold px-3 py-1.5 rounded-lg outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer transition-colors"
+                    >
+                      <option value="ALL">All Methods</option>
+                      {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
 
-                  <span className="text-[11px] flex-1" style={{ color: 'var(--muted)' }}>
-                    {filteredCandidates?.length ?? 0} result{filteredCandidates?.length !== 1 ? 's' : ''}
-                  </span>
+                    {/* Verification filter */}
+                    <select
+                      value={filterVerification}
+                      onChange={e => {
+                        setFilterVerification(e.target.value);
+                        setCandidatePage(1);
+                      }}
+                      className="text-xs bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold px-3 py-1.5 rounded-lg outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer transition-colors"
+                    >
+                      <option value="ALL">All Statuses</option>
+                      <option value="VERIFIED">Verified APIs</option>
+                      <option value="AUTH_REQUIRED">Auth Required</option>
+                      <option value="WEB_PAGE">Web Pages</option>
+                      <option value="UNAVAILABLE">Unavailable / Errors</option>
+                      <option value="PENDING">Pending</option>
+                      <option value="NOT_VERIFIED">Not Verified</option>
+                    </select>
+
+                    <span className="text-[11px] font-medium text-slate-400 ml-1">
+                      {filteredCandidates?.length ?? 0} result{filteredCandidates?.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
                   
                   {selectedCandidates.size > 0 && (
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs"
-                        style={{
-                          background: 'rgba(255,255,255,0.05)',
-                          border: '1px solid var(--border-color)',
-                        }}
-                      >
-                        <Clock size={12} style={{ color: 'var(--muted)' }} />
-                        <span style={{ color: 'var(--text-secondary)' }}>Interval (s):</span>
+                    <div className="flex items-center gap-2 flex-wrap ml-auto">
+                      <div className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                        <Clock size={12} className="text-slate-400" />
+                        <span className="text-slate-600 font-medium">Interval (s):</span>
                         <input
                           type="number"
                           min="5"
                           value={checkInterval}
                           onChange={(e) => setCheckInterval(Math.max(5, parseInt(e.target.value) || 5))}
-                          className="bg-transparent border-none outline-none w-12 text-[var(--text-primary)] font-mono"
+                          className="bg-white border border-slate-200 rounded px-1.5 py-0.5 outline-none w-12 text-slate-800 font-mono text-center font-bold"
                         />
                       </div>
                       <button
                         onClick={handleAcceptSelected}
                         disabled={isAccepting}
-                        className="btn-primary px-3 py-1.5 text-xs flex items-center gap-1.5"
+                        className="btn-primary px-3.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 shadow-sm"
                       >
-                        {isAccepting ? <RefreshCw size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
-                        Accept {selectedCandidates.size} Endpoints
+                        {isAccepting ? <RefreshCw size={12} className="animate-spin" /> : <ShieldCheck size={14} />}
+                        Add to Monitoring ({selectedCandidates.size})
                       </button>
                     </div>
                   )}
                 </div>
 
-                <div
-                  className="rounded-2xl overflow-hidden flex-1"
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border-color)' }}
-                >
+                {/* Action Feedback alert */}
+                {actionFeedback && (
+                  <div className={`p-3.5 rounded-xl text-xs flex items-center justify-between gap-3 border shadow-xs animate-fade-in ${
+                    actionFeedback.type === 'success' 
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                      : 'bg-rose-50 border-rose-200 text-rose-800'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      {actionFeedback.type === 'success' ? (
+                        <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertCircle size={16} className="text-rose-600 shrink-0" />
+                      )}
+                      <span className="font-medium">{actionFeedback.message}</span>
+                    </div>
+                    {actionFeedback.type === 'success' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('endpoints');
+                          setActionFeedback(null);
+                        }}
+                        className="font-bold text-emerald-700 hover:text-emerald-900 underline text-xs cursor-pointer ml-auto whitespace-nowrap"
+                      >
+                        View Monitored Endpoints &rarr;
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs flex-1">
                   {isDiscovering && (!candidates || candidates.length === 0) ? (
-                    <div className="py-12 text-center">
-                      <RefreshCw size={32} className="mx-auto mb-3 animate-spin" style={{ color: 'var(--primary)' }} />
-                      <p className="font-medium mb-1" style={{ color: 'var(--primary-light)' }}>Discovery in progress…</p>
-                      <p className="text-sm" style={{ color: 'var(--muted)' }}>
-                        Crawling pages, parsing specs, and probing endpoints.
+                    <div className="py-16 px-4 text-center flex flex-col items-center justify-center">
+                      <div className="relative w-16 h-16 flex items-center justify-center mb-4">
+                        <div className="radar-ring" />
+                        <div className="w-12 h-12 rounded-full bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shadow-inner">
+                          <RefreshCw size={22} className="animate-spin" />
+                        </div>
+                      </div>
+                      <h4 className="text-base font-bold text-slate-900 mb-1">Discovery in Progress</h4>
+                      <p className="text-xs text-slate-500 max-w-sm mb-4">
+                        Crawling pages, parsing OpenAPI specs &amp; JavaScript bundles, and actively probing candidate endpoints.
                       </p>
+                      <div className="flex items-center gap-2 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200/80 px-3 py-1 rounded-full">
+                        <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+                        Pipeline executing active checks
+                      </div>
                     </div>
                   ) : filteredCandidates?.length === 0 ? (
-                    <div className="py-12 text-center">
-                      <Search size={32} className="mx-auto mb-3 opacity-20" />
-                      <p className="text-sm" style={{ color: 'var(--muted)' }}>
+                    <div className="py-16 px-4 text-center">
+                      <Search size={36} className="mx-auto mb-3 text-slate-300" />
+                      <p className="font-semibold text-slate-700 mb-1">
                         {candidates?.length === 0
-                          ? 'No endpoints discovered yet.'
-                          : 'No results for current filters.'}
+                          ? 'No endpoints discovered yet'
+                          : 'No candidates match your current filters'}
+                      </p>
+                      <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                        {candidates?.length === 0
+                          ? 'Run discovery or wait for crawler to complete its cycle.'
+                          : 'Try changing your source or method filter above.'}
                       </p>
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
                       <table className="w-full text-left border-collapse">
                         <thead>
-                          <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-color)' }}>
+                          <tr className="bg-slate-50 border-b border-slate-200">
                             <th className="px-4 py-3 w-8">
                               <input 
                                 type="checkbox"
                                 onChange={toggleAllCandidates}
-                                checked={(filteredCandidates?.filter(c => c.verification_status === 'VERIFIED' && !c.accepted).length ?? 0) > 0 && selectedCandidates.size === (filteredCandidates?.filter(c => c.verification_status === 'VERIFIED' && !c.accepted).length ?? 0)}
-                                disabled={!filteredCandidates?.some(c => c.verification_status === 'VERIFIED' && !c.accepted)}
-                                className="rounded bg-[rgba(0,0,0,0.2)] border border-[var(--border-color)] text-[var(--primary)] focus:ring-[var(--primary)]"
+                                checked={selectableCandidates.length > 0 && selectableCandidates.every(c => selectedCandidates.has(c.id))}
+                                disabled={selectableCandidates.length === 0}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
                               />
                             </th>
-                            {['Method & Path', 'Source', 'Confidence', 'Verification', 'Accepted'].map(h => (
-                              <th key={h} className="px-4 py-3 text-[10px] font-semibold uppercase tracking-widest whitespace-nowrap" style={{ color: 'var(--muted)' }}>
+                            {['Method & Path', 'Source', 'Confidence', 'Verification', 'Status'].map(h => (
+                              <th key={h} className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">
                                 {h}
                               </th>
                             ))}
                           </tr>
                         </thead>
-                        <tbody>
-                          {filteredCandidates?.map((c, idx) => (
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredCandidates?.map((c) => (
                             <tr
                               key={c.id}
-                              className={`data-row animate-fade-in ${selectedCandidates.has(c.id) ? 'bg-[rgba(99,102,241,0.05)]' : ''}`}
-                              style={{ animationDelay: `${Math.min(idx * 20, 300)}ms` }}
+                              className={`data-row ${selectedCandidates.has(c.id) ? 'bg-blue-50/50' : ''}`}
                             >
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-3.5">
                                 <input 
                                   type="checkbox"
                                   checked={selectedCandidates.has(c.id)}
                                   onChange={() => toggleCandidateSelection(c.id)}
-                                  disabled={c.accepted || c.verification_status !== 'VERIFIED'}
-                                  className="rounded bg-[rgba(0,0,0,0.2)] border border-[var(--border-color)] text-[var(--primary)] focus:ring-[var(--primary)]"
+                                  disabled={!isCandidateSelectable(c)}
+                                  title={
+                                    c.accepted 
+                                      ? 'Already monitored' 
+                                      : !isCandidateSelectable(c) 
+                                        ? `${c.verification_status === 'WEB_PAGE' ? 'Web pages' : c.verification_status} cannot be added as API endpoints` 
+                                        : 'Select candidate for monitoring'
+                                  }
+                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                                 />
                               </td>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
+                              <td className="px-4 py-3.5">
+                                <div className="flex items-center gap-2.5">
                                   <MethodBadge method={c.method} />
                                   <span
-                                    className="font-mono text-xs max-w-[180px] lg:max-w-[260px] truncate"
+                                    className="font-mono text-xs font-semibold text-slate-800 max-w-[180px] lg:max-w-[280px] truncate"
                                     title={c.path}
-                                    style={{ color: 'var(--text-primary)' }}
                                   >
                                     {c.path}
                                   </span>
                                 </div>
                                 {c.summary && (
-                                  <div className="text-[10px] mt-0.5 truncate max-w-[200px]" style={{ color: 'var(--muted)' }}>
+                                  <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[220px]">
                                     {c.summary}
                                   </div>
                                 )}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-3.5">
                                 <SourceChip source={c.source} />
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-3.5">
                                 <ConfidenceChip confidence={c.confidence} />
                               </td>
-                              <td className="px-4 py-3">
-                                <VerifyChip status={c.verification_status} httpStatus={c.http_status} />
+                              <td className="px-4 py-3.5">
+                                <div title={c.verification_error || undefined}>
+                                  <VerifyChip status={c.verification_status} httpStatus={c.http_status} />
+                                </div>
+                                {c.verification_error && (
+                                  <div className="text-[10px] text-slate-500 mt-0.5 max-w-[200px] truncate" title={c.verification_error}>
+                                    {c.verification_error}
+                                  </div>
+                                )}
                                 {c.response_time_ms && c.response_time_ms > 0 && (
-                                  <div className="text-[10px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                                  <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
                                     {c.response_time_ms.toFixed(0)}ms
                                   </div>
                                 )}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-3.5">
                                 {c.accepted ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px]" style={{ color: 'var(--success)' }}>
-                                    <CheckCircle2 size={12} /> Monitoring
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                    <CheckCircle2 size={12} /> Monitored
                                   </span>
                                 ) : (
-                                  <span className="text-[11px]" style={{ color: 'var(--muted)' }}>—</span>
+                                  <span className="text-xs text-slate-300">—</span>
                                 )}
                               </td>
                             </tr>
@@ -1032,13 +1106,15 @@ export const ProjectDetails = () => {
                         </tbody>
                       </table>
                       {candidatesMeta && (
-                        <Pagination
-                          currentPage={candidatePage}
-                          totalPages={Math.ceil((candidatesMeta.total || 0) / candidatesPerPage)}
-                          onPageChange={setCandidatePage}
-                          totalItems={candidatesMeta.total}
-                          itemsPerPage={candidatesPerPage}
-                        />
+                        <div className="p-3 border-t border-slate-100">
+                          <Pagination
+                            currentPage={candidatePage}
+                            totalPages={Math.ceil((candidatesMeta.total || 0) / candidatesPerPage)}
+                            onPageChange={setCandidatePage}
+                            totalItems={candidatesMeta.total}
+                            itemsPerPage={candidatesPerPage}
+                          />
+                        </div>
                       )}
                     </div>
                   )}

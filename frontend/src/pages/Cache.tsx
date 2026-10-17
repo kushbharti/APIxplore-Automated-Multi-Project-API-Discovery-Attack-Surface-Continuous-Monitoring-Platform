@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { HardDrive, Trash2 } from 'lucide-react';
+import { HardDrive, Trash2 } from '../components/icons';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 

@@ -257,6 +257,7 @@ async def crawl_website(
     max_depth: int = 3,
     max_pages: int = 100,
     progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> CrawlResult:
     """
     BFS crawl of the target website, concurrent per level.
@@ -274,6 +275,7 @@ async def crawl_website(
         max_depth: Maximum BFS depth (default 3).
         max_pages: Maximum pages to visit (default 100).
         progress_callback: Optional async callback for live progress updates.
+        headers: Optional auth headers for login-protected targets.
 
     Returns:
         CrawlResult with all discovered URLs classified by type.
@@ -293,14 +295,18 @@ async def crawl_website(
 
     semaphore = asyncio.Semaphore(10)
 
+    client_headers = {
+        "User-Agent": "APIMonitor-Discovery/1.0 (web-crawler; endpoint-discovery)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
+    }
+    if headers:
+        client_headers.update(headers)
+
     async with httpx.AsyncClient(
         timeout=8.0,
         follow_redirects=True,
         max_redirects=5,
-        headers={
-            "User-Agent": "APIMonitor-Discovery/1.0 (web-crawler; endpoint-discovery)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8",
-        },
+        headers=client_headers,
         limits=httpx.Limits(max_connections=15),
     ) as client:
 

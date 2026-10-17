@@ -38,11 +38,13 @@ os.environ.setdefault("FIRST_ADMIN_EMAIL", "admin@test.com")
 os.environ.setdefault("FIRST_ADMIN_PASSWORD", "AdminTest1234!")
 
 from app.core.config import get_settings  # noqa: E402
-from app.core.security import create_access_token  # noqa: E402
 from app.db import session as db_session_module  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models.base import Base  # noqa: E402
-from app.models.user import UserRole  # noqa: E402
+
+def create_access_token(subject: str, role: str = "ADMIN") -> str:
+    return f"mock-token-{subject}-{role}"
+
 
 # ---------------------------------------------------------------------------
 # Test database engine (SQLite in-memory / file)

@@ -26,6 +26,7 @@ import json
 import re
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import structlog
@@ -47,46 +48,12 @@ from app.models.discovery_run import DiscoveryRun, DiscoveryStatus
 
 logger = structlog.get_logger(__name__)
 
-# Matches GitHub repository URL:   github.com/OWNER/REPO (exactly 2 segments)
-_GITHUB_REPO_RE = re.compile(
-    r"^https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/?$",
-    re.IGNORECASE,
-)
-# Matches GitHub profile URL:      github.com/USERNAME (exactly 1 segment)
-_GITHUB_PROFILE_RE = re.compile(
-    r"^https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/?(?:\?.*)?$",
-    re.IGNORECASE,
-)
-
-
-def _classify_github_url(url: str) -> str | None:
-    """
-    Classify a GitHub URL.
-    Returns:
-        'repo'    — github.com/OWNER/REPO
-        'profile' — github.com/USERNAME  (with optional ?tab=...)
-        None      — not a GitHub URL
-    """
-    stripped = url.split("?")[0].rstrip("/")
-    # Try repo first (more specific)
-    if _GITHUB_REPO_RE.match(stripped):
-        return "repo"
-    # Then profile
-    if _GITHUB_PROFILE_RE.match(url.rstrip("/")):
-        return "profile"
-    return None
-
-
-def _is_github_url(url: str) -> bool:
-    """Return True if this URL is a GitHub repository or profile."""
-    return _classify_github_url(url) is not None
-
-
 async def run_discovery(
     run_id: uuid.UUID,
     project_url: str,
     session: AsyncSession,
     deployment_url: str | None = None,
+    auth_config: Any | None = None,
 ) -> None:
     """
     Execute full discovery pipeline for a project.
@@ -96,14 +63,15 @@ async def run_discovery(
 
     Args:
         run_id:         The DiscoveryRun ID to update.
-        project_url:    The target project URL (website or GitHub repo).
+        project_url:    The target project URL (website or API).
         session:        Async DB session (fresh session for background tasks).
-        deployment_url: Optional deployment URL for GitHub repos to verify against.
+        deployment_url: Optional secondary deployment URL.
+        auth_config:    Optional target credentials or OAuth token for login-protected sites.
     """
     logger.info("discovery_started", run_id=str(run_id), url=project_url)
 
     # Load the run
-    run = await session.get(DiscoveryRun, run_id)
+    run = await session.get(DiscoveryRun, str(run_id))
     if run is None:
         logger.error("discovery_run_not_found", run_id=str(run_id))
         return
@@ -115,6 +83,29 @@ async def run_discovery(
 
     provider_results: dict[str, dict] = {}
     all_candidates: list[dict] = []
+
+    # Build ephemeral auth headers if credentials / OAuth token provided
+    auth_headers: dict[str, str] = {}
+    if auth_config:
+        auth_type = getattr(auth_config, "auth_type", None) or (
+            auth_config.get("auth_type") if isinstance(auth_config, dict) else None
+        )
+        oauth_token = getattr(auth_config, "oauth_token", None) or (
+            auth_config.get("oauth_token") if isinstance(auth_config, dict) else None
+        )
+        username = getattr(auth_config, "username_or_email", None) or (
+            auth_config.get("username_or_email") if isinstance(auth_config, dict) else None
+        )
+        password = getattr(auth_config, "password", None) or (
+            auth_config.get("password") if isinstance(auth_config, dict) else None
+        )
+
+        if auth_type == "GOOGLE_OAUTH" and oauth_token:
+            auth_headers["Authorization"] = f"Bearer {oauth_token}"
+        elif username or password:
+            import base64
+            encoded = base64.b64encode(f"{username or ''}:{password or ''}".encode("utf-8")).decode("ascii")
+            auth_headers["Authorization"] = f"Basic {encoded}"
 
     # Helper to flush progress to DB
     async def _update_progress(step: str, details: dict) -> None:
@@ -135,9 +126,7 @@ async def run_discovery(
     # -------------------------------------------------------------------------
     try:
         await _update_progress("URL_VALIDATION", {"url": project_url})
-        # GitHub URLs are not outbound targets for SSRF purposes — we use their API
-        if not _is_github_url(project_url):
-            validate_url_for_outbound(project_url, context="discovery_target")
+        validate_url_for_outbound(project_url, context="discovery_target")
     except SSRFBlockedError as exc:
         run.status = DiscoveryStatus.FAILED.value
         run.completed_at = datetime.now(UTC)
@@ -146,32 +135,24 @@ async def run_discovery(
         await session.commit()
         return
 
-    # -------------------------------------------------------------------------
-    # Step 2: Route to GitHub or Website discovery pipeline
-    # -------------------------------------------------------------------------
-    is_github_type = _classify_github_url(project_url)
+    # Check for unsupported direct GitHub target without deployment URL
+    parsed = urlparse(project_url)
+    if parsed.netloc in ("github.com", "www.github.com") and not deployment_url:
+        run.status = DiscoveryStatus.FAILED.value
+        run.completed_at = datetime.now(UTC)
+        run.error_message = (
+            "Direct GitHub repository discovery is unsupported without a live deployment URL. "
+            "Please configure a live Deployment URL to discover and verify API endpoints."
+        )
+        await _update_progress("FAILED", {"error": run.error_message})
+        await session.flush()
+        await session.commit()
+        return
 
-    if is_github_type == "repo":
-        await _run_github_discovery(
-            run=run,
-            project_url=project_url,
-            deployment_url=deployment_url,
-            session=session,
-            provider_results=provider_results,
-            all_candidates=all_candidates,
-            update_progress=_update_progress,
-        )
-    elif is_github_type == "profile":
-        await _run_github_profile_discovery(
-            run=run,
-            project_url=project_url,
-            deployment_url=deployment_url,
-            session=session,
-            provider_results=provider_results,
-            all_candidates=all_candidates,
-            update_progress=_update_progress,
-        )
-    else:
+    # -------------------------------------------------------------------------
+    # Step 2: Website & API discovery pipeline
+    # -------------------------------------------------------------------------
+    try:
         await _run_website_discovery(
             run=run,
             project_url=project_url,
@@ -179,7 +160,17 @@ async def run_discovery(
             provider_results=provider_results,
             all_candidates=all_candidates,
             update_progress=_update_progress,
+            auth_headers=auth_headers,
+            deployment_url=deployment_url,
         )
+    except Exception as exc:
+        logger.exception("discovery_pipeline_failed", run_id=str(run_id), error=str(exc))
+        run.status = DiscoveryStatus.FAILED.value
+        run.completed_at = datetime.now(UTC)
+        run.error_message = f"Discovery execution failed: {str(exc)}"
+        await _update_progress("FAILED", {"error": str(exc)})
+        await session.flush()
+        await session.commit()
 
 
 async def _run_website_discovery(
@@ -189,10 +180,19 @@ async def _run_website_discovery(
     provider_results: dict,
     all_candidates: list,
     update_progress,
+    auth_headers: dict[str, str] | None = None,
+    deployment_url: str | None = None,
 ) -> None:
     """Full website/API discovery pipeline."""
     parsed = urlparse(project_url)
     base_root = f"{parsed.scheme}://{parsed.netloc}"
+
+    # If a separate deployment URL is provided, use it as the crawl/probe target
+    # (e.g., GitHub repo URL as project_url, but live site at deployment_url)
+    effective_crawl_url = deployment_url if deployment_url else project_url
+    if deployment_url:
+        effective_parsed = urlparse(deployment_url)
+        base_root = f"{effective_parsed.scheme}://{effective_parsed.netloc}"
 
     # -------------------------------------------------------------------------
     # Step 2a & 2b: OpenAPI Discovery and Website Crawl (Concurrent)
@@ -202,16 +202,16 @@ async def _run_website_discovery(
     async def _crawl_cb(state: dict) -> None:
         await update_progress("CRAWLING", state)
 
-    openapi_task = asyncio.create_task(discover_openapi(base_root))
+    openapi_task = asyncio.create_task(discover_openapi(effective_crawl_url, headers=auth_headers))
     crawl_task = asyncio.create_task(
-        crawl_website(project_url, max_depth=2, max_pages=50, progress_callback=_crawl_cb)
+        crawl_website(effective_crawl_url, max_depth=3, max_pages=80, progress_callback=_crawl_cb, headers=auth_headers)
     )
 
     openapi_result = None
     try:
-        openapi_result = await asyncio.wait_for(openapi_task, timeout=30.0)
+        openapi_result = await asyncio.wait_for(openapi_task, timeout=40.0)
         run.openapi_checked = True
-        if openapi_result.found:
+        if openapi_result and openapi_result.found:
             run.openapi_found = True
             run.openapi_url = openapi_result.spec_url
             for ep in openapi_result.endpoints:
@@ -225,15 +225,29 @@ async def _run_website_discovery(
                     "summary": ep.summary,
                     "tags": ",".join(ep.tags) if ep.tags else None,
                 })
-        provider_results["openapi"] = {
-            "found": openapi_result.found,
-            "spec_url": openapi_result.spec_url,
-            "endpoints": len(openapi_result.endpoints),
-        }
+            provider_results["openapi"] = {
+                "found": True,
+                "spec_url": openapi_result.spec_url,
+                "endpoints": len(openapi_result.endpoints),
+            }
+        else:
+            run.openapi_found = False
+            provider_results["openapi"] = {
+                "found": False,
+                "endpoints": 0,
+            }
     except asyncio.TimeoutError:
-        provider_results["openapi"] = {"error": "timeout"}
+        run.openapi_checked = True
+        run.openapi_found = False
+        provider_results["openapi"] = {"found": False, "error": "timeout"}
     except Exception as exc:
-        provider_results["openapi"] = {"error": str(exc)[:200]}
+        run.openapi_checked = True
+        run.openapi_found = False
+        provider_results["openapi"] = {"found": False, "error": str(exc)[:200]}
+    finally:
+        run.openapi_checked = True
+        await session.flush()
+        await session.commit()
 
     crawl_result = None
     js_urls: list[str] = []
@@ -315,10 +329,18 @@ async def _run_website_discovery(
         )
         run.js_checked = True
         for ep in js_result.endpoints:
-            full_url = urljoin(base_root, ep.path)
+            if ep.path.startswith(("http://", "https://")):
+                full_url = ep.path
+                parsed_ep = urlparse(ep.path)
+                path = parsed_ep.path or "/"
+                if parsed_ep.query:
+                    path += f"?{parsed_ep.query}"
+            else:
+                path = ep.path
+                full_url = urljoin(base_root, ep.path)
             all_candidates.append({
                 "method": ep.method,
-                "path": ep.path,
+                "path": path,
                 "full_url": full_url,
                 "source": DiscoverySource.JAVASCRIPT.value,
                 "confidence": DiscoveryConfidence.MEDIUM.value,
@@ -342,253 +364,9 @@ async def _run_website_discovery(
         provider_results=provider_results,
         update_progress=update_progress,
         skip_verification=False,
+        auth_headers=auth_headers,
     )
 
-
-async def _run_github_discovery(
-    run: DiscoveryRun,
-    project_url: str,
-    deployment_url: str | None,
-    session: AsyncSession,
-    provider_results: dict,
-    all_candidates: list,
-    update_progress,
-) -> None:
-    """GitHub repository source-code discovery pipeline."""
-    await update_progress("GITHUB_ANALYSIS", {"url": project_url})
-
-    try:
-        from app.discovery.github import discover_github_repo
-        github_result = await asyncio.wait_for(
-            discover_github_repo(project_url, deployment_url=deployment_url),
-            timeout=120.0,
-        )
-        run.github_checked = True
-
-        for ep in github_result.endpoints:
-            # If we have a deployment URL, build the full URL against it
-            if deployment_url:
-                parsed_deploy = urlparse(deployment_url.rstrip("/"))
-                base_deploy = f"{parsed_deploy.scheme}://{parsed_deploy.netloc}"
-                full_url = urljoin(base_deploy, ep.path)
-            else:
-                full_url = ep.path  # Just the path — no live URL
-
-            all_candidates.append({
-                "method": ep.method,
-                "path": ep.path,
-                "full_url": full_url,
-                "source": DiscoverySource.GITHUB.value,
-                "confidence": ep.confidence,
-                "operation_id": ep.operation_id,
-                "summary": ep.summary,
-                "tags": ",".join(ep.tags) if ep.tags else None,
-            })
-
-        provider_results["github"] = {
-            "found": True,
-            "owner": github_result.owner,
-            "repo": github_result.repo,
-            "files_analyzed": github_result.files_analyzed,
-            "endpoints": len(github_result.endpoints),
-            "has_deployment_url": bool(deployment_url),
-        }
-    except asyncio.TimeoutError:
-        provider_results["github"] = {"error": "timeout"}
-        run.github_checked = True
-    except Exception as exc:
-        provider_results["github"] = {"error": str(exc)[:200]}
-        run.github_checked = True
-
-    # -------------------------------------------------------------------------
-    # Deduplication & Verification (or mark NOT_VERIFIED if no deployment URL)
-    # -------------------------------------------------------------------------
-    await _deduplicate_verify_and_save(
-        run=run,
-        session=session,
-        all_candidates=all_candidates,
-        provider_results=provider_results,
-        update_progress=update_progress,
-        skip_verification=(deployment_url is None),
-    )
-
-
-async def _run_github_profile_discovery(
-    run: DiscoveryRun,
-    project_url: str,
-    deployment_url: str | None,
-    session: AsyncSession,
-    provider_results: dict,
-    all_candidates: list,
-    update_progress,
-) -> None:
-    """
-    GitHub profile/user discovery pipeline.
-
-    Visits github.com/USERNAME?tab=repositories, parses public repository
-    links from the HTML, then runs discover_github_repo on each (up to 5).
-
-    This is intentionally read-only and does not execute any code.
-    It respects rate limits by limiting concurrent requests.
-    """
-    import re as _re
-    import httpx
-
-    # Derive canonical profile URL and username
-    parsed = urlparse(project_url)
-    username = parsed.path.strip("/").split("/")[0]
-    # The repositories page for the profile
-    repos_page_url = f"https://github.com/{username}?tab=repositories"
-
-    await update_progress("GITHUB_PROFILE_ANALYSIS", {"url": repos_page_url, "username": username})
-    logger.info("github_profile_discovery_started", username=username, url=repos_page_url)
-
-    repo_urls: list[str] = []
-
-    try:
-        async with httpx.AsyncClient(
-            timeout=20.0,
-            follow_redirects=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 APIMonitor-Discovery/1.0",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-            limits=httpx.Limits(max_connections=2),
-        ) as client:
-            resp = await asyncio.wait_for(
-                client.get(repos_page_url),
-                timeout=20.0,
-            )
-
-            if resp.status_code == 200:
-                html = resp.text
-                # Extract links like /username/repo-name from the repository list
-                # GitHub renders repo links as href="/owner/repo"
-                pattern = _re.compile(
-                    r'href="/(' + _re.escape(username) + r'/[A-Za-z0-9_.-]+)"',
-                    _re.IGNORECASE,
-                )
-                found = pattern.findall(html)
-
-                # Deduplicate and build full URLs
-                seen_repos: set[str] = set()
-                for owner_repo in found:
-                    parts = owner_repo.strip("/").split("/")
-                    if len(parts) != 2:
-                        continue
-                    owner, repo = parts[0], parts[1]
-                    # Skip special GitHub repos like .github
-                    if repo.startswith("."):
-                        continue
-                    key = f"{owner.lower()}/{repo.lower()}"
-                    if key not in seen_repos:
-                        seen_repos.add(key)
-                        repo_urls.append(f"https://github.com/{owner}/{repo}")
-                        if len(repo_urls) >= 5:  # Limit to 5 repos per profile
-                            break
-
-                logger.info(
-                    "github_profile_repos_found",
-                    username=username,
-                    count=len(repo_urls),
-                    repos=repo_urls,
-                )
-            else:
-                logger.warning(
-                    "github_profile_page_error",
-                    username=username,
-                    status_code=resp.status_code,
-                )
-    except Exception as exc:
-        logger.warning("github_profile_fetch_error", username=username, error=str(exc)[:200])
-
-    if not repo_urls:
-        provider_results["github"] = {
-            "error": f"No public repositories found for user '{username}'. "
-                     "The profile may be private or have no public repos.",
-            "profile_url": repos_page_url,
-        }
-        run.github_checked = True
-        await _deduplicate_verify_and_save(
-            run=run,
-            session=session,
-            all_candidates=all_candidates,
-            provider_results=provider_results,
-            update_progress=update_progress,
-            skip_verification=(deployment_url is None),
-        )
-        return
-
-    # Analyze each discovered repository
-    from app.discovery.github import discover_github_repo
-
-    repo_results = []
-    total_endpoints = 0
-    total_files = 0
-
-    for repo_url in repo_urls:
-        await update_progress("GITHUB_REPO_ANALYSIS", {"repo_url": repo_url})
-        try:
-            github_result = await asyncio.wait_for(
-                discover_github_repo(repo_url, deployment_url=deployment_url),
-                timeout=90.0,
-            )
-
-            for ep in github_result.endpoints:
-                if deployment_url:
-                    parsed_deploy = urlparse(deployment_url.rstrip("/"))
-                    base_deploy = f"{parsed_deploy.scheme}://{parsed_deploy.netloc}"
-                    full_url = urljoin(base_deploy, ep.path)
-                else:
-                    full_url = ep.path  # Just the path — no live URL
-
-                all_candidates.append({
-                    "method": ep.method,
-                    "path": ep.path,
-                    "full_url": full_url,
-                    "source": DiscoverySource.GITHUB.value,
-                    "confidence": ep.confidence,
-                    "operation_id": ep.operation_id,
-                    "summary": ep.summary,
-                    "tags": ",".join(ep.tags) if ep.tags else None,
-                })
-
-            total_endpoints += len(github_result.endpoints)
-            total_files += github_result.files_analyzed
-            repo_results.append({
-                "repo": repo_url,
-                "owner": github_result.owner,
-                "repo_name": github_result.repo,
-                "files_analyzed": github_result.files_analyzed,
-                "endpoints": len(github_result.endpoints),
-                "error": github_result.error,
-            })
-
-        except asyncio.TimeoutError:
-            repo_results.append({"repo": repo_url, "error": "timeout"})
-        except Exception as exc:
-            repo_results.append({"repo": repo_url, "error": str(exc)[:200]})
-
-    run.github_checked = True
-    provider_results["github"] = {
-        "found": True,
-        "type": "profile",
-        "username": username,
-        "repositories_discovered": len(repo_urls),
-        "repositories_analyzed": repo_results,
-        "total_files_analyzed": total_files,
-        "total_endpoints": total_endpoints,
-        "has_deployment_url": bool(deployment_url),
-    }
-
-    await _deduplicate_verify_and_save(
-        run=run,
-        session=session,
-        all_candidates=all_candidates,
-        provider_results=provider_results,
-        update_progress=update_progress,
-        skip_verification=(deployment_url is None),
-    )
 
 
 
@@ -600,6 +378,7 @@ async def _deduplicate_verify_and_save(
     provider_results: dict,
     update_progress,
     skip_verification: bool = False,
+    auth_headers: dict[str, str] | None = None,
 ) -> None:
     """
     Deduplicate candidates, verify them (unless skipped), persist everything.
@@ -615,8 +394,7 @@ async def _deduplicate_verify_and_save(
         DiscoveryConfidence.LOW.value: 1,
     }
     source_rank = {
-        DiscoverySource.OPENAPI.value: 4,
-        DiscoverySource.GITHUB.value: 3,
+        DiscoverySource.OPENAPI.value: 3,
         DiscoverySource.JAVASCRIPT.value: 2,
         DiscoverySource.CRAWLER.value: 1,
         DiscoverySource.MANUAL.value: 0,
@@ -624,7 +402,7 @@ async def _deduplicate_verify_and_save(
 
     seen: dict[tuple[str, str], dict] = {}
     for c in all_candidates:
-        key = (c["method"].upper(), c["path"])
+        key = (c["method"].upper(), c["full_url"])
         if key not in seen:
             seen[key] = c
         else:
@@ -686,7 +464,7 @@ async def _deduplicate_verify_and_save(
 
         try:
             results = await asyncio.wait_for(
-                verify_batch(to_verify),
+                verify_batch(to_verify, headers=auth_headers),
                 timeout=120.0,
             )
             for result in results:
@@ -698,7 +476,7 @@ async def _deduplicate_verify_and_save(
                 candidate.verification_status = result.status
                 candidate.http_status = result.http_status
                 candidate.response_time_ms = result.response_time_ms
-                candidate.verification_error = result.error
+                candidate.verification_error = result.diagnostic_notes or result.error
 
                 if result.status == "VERIFIED":
                     verified_count += 1

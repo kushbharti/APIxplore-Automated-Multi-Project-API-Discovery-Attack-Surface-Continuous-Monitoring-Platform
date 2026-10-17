@@ -14,49 +14,58 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-# Matches GitHub repository URLs:  github.com/OWNER/REPO
-# Matches GitHub profile URLs:      github.com/USERNAME  (with optional ?tab=...)
-_GITHUB_URL_RE = re.compile(
-    r"^https?://github\.com/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?/?(?:\?.*)?$",
-    re.IGNORECASE,
-)
-# Legacy alias (kept for any code that imports this symbol)
-_GITHUB_REPO_RE = _GITHUB_URL_RE
-
-
 # ---------------------------------------------------------------------------
 # Project schemas
 # ---------------------------------------------------------------------------
+
+
+class TargetAuthConfig(BaseModel):
+    """Ephemeral credentials or OAuth token for discovering protected target websites."""
+    auth_type: Literal["CREDENTIALS", "GOOGLE_OAUTH"] = "CREDENTIALS"
+    username_or_email: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=255)
+    oauth_token: str | None = Field(default=None, max_length=4096)
+
+
+class DiscoveryStartRequest(BaseModel):
+    """Optional payload when initiating a discovery run."""
+    auth_config: TargetAuthConfig | None = None
 
 
 class ProjectCreate(BaseModel):
     """Body for POST /api/v1/projects."""
 
     name: str = Field(min_length=1, max_length=200)
-    url: str = Field(min_length=8, max_length=2048, description="Target website/API root URL or GitHub repository URL")
+    url: str = Field(min_length=8, max_length=2048, description="Target website or API root URL")
     description: str | None = Field(default=None, max_length=1000)
-    source_type: Literal["WEBSITE", "GITHUB_REPOSITORY"] = "WEBSITE"
+    source_type: Literal["WEBSITE", "API", "AUTH_WEBSITE"] = "WEBSITE"
     deployment_url: str | None = Field(
         default=None,
         max_length=2048,
-        description="For GitHub repos: the live deployment URL to verify discovered routes against",
+        description="Optional secondary or staging deployment URL",
+    )
+    auth_config: TargetAuthConfig | None = Field(
+        default=None,
+        description="Ephemeral target authentication configuration; never persisted in DB",
     )
 
     @field_validator("url")
     @classmethod
     def validate_url_scheme(cls, v: str) -> str:
-        if not (v.startswith("http://") or v.startswith("https://")):
+        trimmed = v.strip()
+        if not (trimmed.startswith("http://") or trimmed.startswith("https://")):
             raise ValueError("URL must start with http:// or https://")
-        return v.rstrip("/")
+        return trimmed
 
     @field_validator("deployment_url")
     @classmethod
     def validate_deployment_url(cls, v: str | None) -> str | None:
         if v is None:
             return None
-        if not (v.startswith("http://") or v.startswith("https://")):
+        trimmed = v.strip()
+        if not (trimmed.startswith("http://") or trimmed.startswith("https://")):
             raise ValueError("Deployment URL must start with http:// or https://")
-        return v.rstrip("/")
+        return trimmed
 
 
 class ProjectUpdate(BaseModel):
@@ -70,16 +79,19 @@ class ProjectUpdate(BaseModel):
 class ProjectOut(BaseModel):
     """Project representation returned to API callers."""
 
-    id: uuid.UUID
+    id: uuid.UUID | str
     name: str
     url: str
     description: str | None
+    source_type: str = "WEBSITE"
+    deployment_url: str | None = None
     status: str
     health_score: float | None
     endpoint_count: int
     healthy_count: int
     degraded_count: int
     down_count: int
+    unknown_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -89,15 +101,18 @@ class ProjectOut(BaseModel):
 class ProjectSummary(BaseModel):
     """Compact project representation for list views."""
 
-    id: uuid.UUID
+    id: uuid.UUID | str
     name: str
     url: str
+    source_type: str = "WEBSITE"
+    deployment_url: str | None = None
     status: str
     health_score: float | None
     endpoint_count: int
     healthy_count: int
     degraded_count: int
     down_count: int
+    unknown_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -111,14 +126,15 @@ class ProjectSummary(BaseModel):
 class DiscoveryRunOut(BaseModel):
     """Discovery run status."""
 
-    id: uuid.UUID
-    project_id: uuid.UUID
+    id: uuid.UUID | str
+    project_id: uuid.UUID | str
     status: str
     started_at: datetime | None
     completed_at: datetime | None
     openapi_checked: bool
     crawl_checked: bool
     js_checked: bool
+    github_checked: bool = False
     openapi_found: bool
     openapi_url: str | None
     candidates_total: int
@@ -165,8 +181,8 @@ class DiscoveryRunOut(BaseModel):
 class DiscoveryCandidateOut(BaseModel):
     """Discovery candidate."""
 
-    id: uuid.UUID
-    run_id: uuid.UUID
+    id: uuid.UUID | str
+    run_id: uuid.UUID | str
     method: str
     path: str
     full_url: str
@@ -180,7 +196,7 @@ class DiscoveryCandidateOut(BaseModel):
     response_time_ms: float | None
     verification_error: str | None
     accepted: bool
-    endpoint_id: uuid.UUID | None
+    endpoint_id: uuid.UUID | str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -189,7 +205,7 @@ class DiscoveryCandidateOut(BaseModel):
 class AcceptCandidatesRequest(BaseModel):
     """Body for POST /api/v1/discovery/{run_id}/accept."""
 
-    candidate_ids: list[uuid.UUID] = Field(
+    candidate_ids: list[uuid.UUID | str] = Field(
         min_length=1, max_length=200, description="IDs of candidates to accept"
     )
     check_interval_seconds: int = Field(default=60, ge=5, le=3600)

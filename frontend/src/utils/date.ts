@@ -1,53 +1,109 @@
 /**
- * Date formatting utilities.
+ * Date and timezone formatting utilities.
+ * All timestamps are converted and displayed in Indian Standard Time (IST, Asia/Kolkata, UTC+05:30).
  *
- * All functions accept string | null | undefined and never throw or
+ * All functions accept string | Date | number | null | undefined and never throw or
  * return "Invalid Date". They are safe to call with any API response value.
  */
 
-/**
- * Format a timestamp as a human-readable date+time string.
- * Returns "—" for null/undefined or unparseable values.
- * Never returns "Invalid Date".
- */
-export function formatDate(ts: string | Date | null | undefined): string {
-  if (!ts) return '—';
-  const d = ts instanceof Date ? ts : new Date(ts);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
+export const IST_TIMEZONE = 'Asia/Kolkata';
 
 /**
- * Format as a short date (no time).
- * Returns "—" for null/undefined or unparseable values.
+ * Safely parse a timestamp into a Date object.
+ * If the input is a naive ISO string without timezone (common from SQL/APIs),
+ * it is normalized to UTC (by appending 'Z') so the browser does not misinterpret
+ * it as local time, preventing 5h 30m offset skew.
  */
-export function formatDateShort(ts: string | Date | null | undefined): string {
-  if (!ts) return '—';
-  const d = ts instanceof Date ? ts : new Date(ts);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+export function parseDate(ts: string | Date | number | null | undefined): Date | null {
+  if (ts == null) return null;
+  if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
+  if (typeof ts === 'number') {
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof ts === 'string') {
+    let s = ts.trim();
+    if (!s) return null;
+    // Normalize naive strings like "2026-10-16 14:30:00" or "2026-10-16T14:30:00" to UTC
+    if (!s.endsWith('Z') && !/[+-]\d{2}(?::?\d{2})?$/.test(s)) {
+      s = s.replace(' ', 'T') + 'Z';
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
 }
 
 /**
- * Format as a relative time string ("2 hours ago", "just now", "in 5 minutes").
- * Falls back to formatDate if the relative time would be more than 7 days.
- * Returns "—" for null/undefined or unparseable values.
+ * Format a timestamp as a human-readable date+time string in IST (Asia/Kolkata).
+ * e.g. "16 Oct 2026, 08:30 PM IST"
  */
-export function formatRelative(ts: string | Date | null | undefined): string {
-  if (!ts) return '—';
-  const d = ts instanceof Date ? ts : new Date(ts);
-  if (isNaN(d.getTime())) return '—';
+export function formatDate(ts: string | Date | number | null | undefined): string {
+  const d = parseDate(ts);
+  if (!d) return '—';
+  try {
+    const formatted = d.toLocaleString('en-IN', {
+      timeZone: IST_TIMEZONE,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+    return `${formatted} IST`;
+  } catch {
+    return d.toLocaleString();
+  }
+}
+
+/**
+ * Format timestamp as a time-only string in IST (Asia/Kolkata).
+ * e.g. "08:30:15 PM IST"
+ */
+export function formatTime(ts: string | Date | number | null | undefined): string {
+  const d = parseDate(ts);
+  if (!d) return '—';
+  try {
+    const formatted = d.toLocaleTimeString('en-IN', {
+      timeZone: IST_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+    return `${formatted} IST`;
+  } catch {
+    return d.toLocaleTimeString();
+  }
+}
+
+/**
+ * Format as a short date (no time) in IST (Asia/Kolkata).
+ * e.g. "16 Oct 2026"
+ */
+export function formatDateShort(ts: string | Date | number | null | undefined): string {
+  const d = parseDate(ts);
+  if (!d) return '—';
+  try {
+    return d.toLocaleDateString('en-IN', {
+      timeZone: IST_TIMEZONE,
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return d.toLocaleDateString();
+  }
+}
+
+/**
+ * Format as a relative time string ("2m ago", "just now", "in 5m") calculated against current IST epoch.
+ * Falls back to formatDate (in IST) if older than 7 days.
+ */
+export function formatRelative(ts: string | Date | number | null | undefined): string {
+  const d = parseDate(ts);
+  if (!d) return '—';
 
   const now = Date.now();
   const diffMs = now - d.getTime();
@@ -63,8 +119,8 @@ export function formatRelative(ts: string | Date | null | undefined): string {
   const diffDay = Math.floor(diffHr / 24);
   if (diffDay <= 7) return isFuture ? `in ${diffDay}d` : `${diffDay}d ago`;
 
-  // Older than 7 days — show the actual date
-  return formatDateShort(ts);
+  // Older than 7 days — show formatted IST date
+  return formatDateShort(d);
 }
 
 /**

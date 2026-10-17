@@ -14,7 +14,7 @@ import enum
 from sqlalchemy import Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUIDMixin, TimestampMixin
 
 
 class ProjectStatus(str, enum.Enum):
@@ -25,7 +25,7 @@ class ProjectStatus(str, enum.Enum):
     DOWN = "DOWN"
 
 
-class Project(UUIDMixin, TimestampMixin, Base):
+class Project(StringUUIDMixin, TimestampMixin, Base):
     """
     A monitored project/API target.
 
@@ -59,6 +59,19 @@ class Project(UUIDMixin, TimestampMixin, Base):
     degraded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     down_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    @property
+    def unknown_count(self) -> int:
+        val = getattr(self, "_unknown_count", None)
+        if val is not None:
+            return val
+        known = (self.healthy_count or 0) + (self.degraded_count or 0) + (self.down_count or 0)
+        total = self.endpoint_count or 0
+        return max(0, total - known)
+
+    @unknown_count.setter
+    def unknown_count(self, value: int) -> None:
+        self._unknown_count = value
+
     # Relationships
     endpoints: Mapped[list["Endpoint"]] = relationship(  # noqa: F821
         "Endpoint", back_populates="project", lazy="noload",
@@ -70,3 +83,4 @@ class Project(UUIDMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:
         return f"Project(id={self.id!s}, name={self.name!r}, url={self.url!r})"
+

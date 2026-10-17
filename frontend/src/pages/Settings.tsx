@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, Settings as SettingsIcon, Shield, Bell, Moon, Database } from 'lucide-react';
+import { Save, Settings as SettingsIcon, Shield, Bell, Moon, Database } from '../components/icons';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 
@@ -58,13 +58,13 @@ export const Settings = () => {
           <button className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[var(--primary-transparent)] text-[var(--primary-light)] border border-[rgba(99,102,241,0.2)] text-left font-medium">
             <SettingsIcon size={18} /> General
           </button>
-          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.03)] hover:text-white transition-colors text-left font-medium">
+          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-slate-100 hover:text-slate-900 transition-colors text-left font-medium">
             <Database size={18} /> Data & Retention
           </button>
-          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.03)] hover:text-white transition-colors text-left font-medium">
+          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-slate-100 hover:text-slate-900 transition-colors text-left font-medium">
             <Shield size={18} /> Security
           </button>
-          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.03)] hover:text-white transition-colors text-left font-medium">
+          <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-[var(--text-secondary)] hover:bg-slate-100 hover:text-slate-900 transition-colors text-left font-medium">
             <Bell size={18} /> Notifications
           </button>
         </div>
@@ -81,7 +81,7 @@ export const Settings = () => {
                   The standard interval applied to newly discovered endpoints.
                 </p>
                 <select 
-                  className="bg-[rgba(0,0,0,0.2)] border border-[var(--border-color)] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)] transition-colors appearance-none"
+                  className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors appearance-none cursor-pointer"
                   value={settings.defaultInterval}
                   onChange={(e) => setSettings({...settings, defaultInterval: parseInt(e.target.value)})}
                 >
@@ -97,7 +97,7 @@ export const Settings = () => {
                   Reject endpoints with self-signed or expired SSL certificates.
                 </p>
                 <label className="flex items-center gap-3 cursor-pointer">
-                  <div className={`w-12 h-6 rounded-full transition-colors relative ${settings.strictSsl ? 'bg-[var(--primary)]' : 'bg-[rgba(255,255,255,0.1)]'}`}>
+                  <div className={`w-12 h-6 rounded-full transition-colors relative ${settings.strictSsl ? 'bg-[var(--primary)]' : 'bg-slate-200'}`}>
                     <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-all ${settings.strictSsl ? 'left-7' : 'left-1'}`}></div>
                   </div>
                   <span className="text-sm font-medium">{settings.strictSsl ? 'Enabled' : 'Disabled'}</span>
@@ -117,7 +117,7 @@ export const Settings = () => {
                   How long to keep detailed logs of resolved incidents and recovery actions.
                 </p>
                 <select 
-                  className="bg-[rgba(0,0,0,0.2)] border border-[var(--border-color)] rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)] transition-colors appearance-none"
+                  className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors appearance-none cursor-pointer"
                   value={settings.retentionDays}
                   onChange={(e) => setSettings({...settings, retentionDays: parseInt(e.target.value)})}
                 >

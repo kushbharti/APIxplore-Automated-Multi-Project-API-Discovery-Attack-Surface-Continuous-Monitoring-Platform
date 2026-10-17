@@ -2,8 +2,8 @@ import { useState } from 'react';
 import {
   Activity, ShieldAlert, Server, ArrowRight, Globe, Layers,
   AlertTriangle, Lock, CheckCircle2, ExternalLink, TrendingUp,
-  Zap, Clock, AlertOctagon, RefreshCw
-} from 'lucide-react';
+  Zap, AlertOctagon, RefreshCw, Search, Plus
+} from '../components/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import type { Project, OverviewStats } from '../types';
@@ -13,30 +13,36 @@ import { Badge } from '../components/Badge';
 import { formatDate } from '../utils/date';
 
 /* ── Helpers ─────────────────────────────────────────────── */
-function HealthBar({ healthy, degraded, down, total }: {
-  healthy: number; degraded: number; down: number; total: number;
+function HealthBar({ healthy, degraded, down, unknown = 0, total }: {
+  healthy: number; degraded: number; down: number; unknown?: number; total: number;
 }) {
   if (total === 0) return (
-    <div className="h-1.5 w-full rounded-full" style={{ background: 'rgba(0,0,0,0.06)' }} />
+    <div className="h-1.5 w-full rounded-full bg-slate-100" />
   );
   return (
-    <div className="h-1.5 w-full rounded-full overflow-hidden flex" style={{ background: 'rgba(0,0,0,0.06)' }}>
+    <div className="h-1.5 w-full rounded-full overflow-hidden flex bg-slate-100" title={`Healthy: ${healthy}, Degraded: ${degraded}, Down: ${down}, Unknown: ${unknown}`}>
       {healthy > 0 && (
         <div
-          className="h-full transition-all duration-700"
-          style={{ width: `${(healthy / total) * 100}%`, background: 'var(--success)', boxShadow: '0 0 6px var(--success-glow)' }}
+          className="h-full transition-all duration-700 bg-emerald-500"
+          style={{ width: `${(healthy / total) * 100}%` }}
         />
       )}
       {degraded > 0 && (
         <div
-          className="h-full"
-          style={{ width: `${(degraded / total) * 100}%`, background: 'var(--warning)' }}
+          className="h-full bg-amber-500"
+          style={{ width: `${(degraded / total) * 100}%` }}
         />
       )}
       {down > 0 && (
         <div
-          className="h-full"
-          style={{ width: `${(down / total) * 100}%`, background: 'var(--error)' }}
+          className="h-full bg-rose-500"
+          style={{ width: `${(down / total) * 100}%` }}
+        />
+      )}
+      {unknown > 0 && (
+        <div
+          className="h-full bg-slate-300"
+          style={{ width: `${(unknown / total) * 100}%` }}
         />
       )}
     </div>
@@ -45,15 +51,15 @@ function HealthBar({ healthy, degraded, down, total }: {
 
 function StatusBadge({ status }: { status: Project['status'] }) {
   const cfg = {
-    HEALTHY:  { label: 'Healthy',  color: 'var(--success)',  bg: 'var(--success-transparent)',  border: 'rgba(16,185,129,0.3)' },
-    DEGRADED: { label: 'Degraded', color: 'var(--warning)',  bg: 'var(--warning-transparent)',  border: 'rgba(245,158,11,0.3)' },
-    DOWN:     { label: 'Down',     color: 'var(--error)',    bg: 'var(--error-transparent)',    border: 'rgba(239,68,68,0.3)' },
-    UNKNOWN:  { label: 'Unknown',  color: 'var(--muted)',    bg: 'rgba(100,100,130,0.12)',      border: 'rgba(100,100,130,0.3)' },
+    HEALTHY:  { label: 'Healthy',  color: '#059669', bg: '#ecfdf5', border: '#a7f3d0' },
+    DEGRADED: { label: 'Degraded', color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
+    DOWN:     { label: 'Down',     color: '#dc2626', bg: '#fef2f2', border: '#fecaca' },
+    UNKNOWN:  { label: 'Unknown',  color: '#64748b', bg: '#f1f5f9', border: '#e2e8f0' },
   };
   const c = cfg[status] ?? cfg.UNKNOWN;
   return (
     <span
-      className="text-[10px] font-bold tracking-widest uppercase px-2 py-0.5 rounded-md"
+      className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 rounded-md"
       style={{ color: c.color, background: c.bg, border: `1px solid ${c.border}` }}
     >
       {c.label}
@@ -64,95 +70,90 @@ function StatusBadge({ status }: { status: Project['status'] }) {
 /* ── Project Card ────────────────────────────────────────── */
 function ProjectCard({ project, onClick }: { project: Project; onClick: () => void }) {
   const score = project.health_score ?? 0;
+  const unknownCount = project.unknown_count ?? Math.max(0, project.endpoint_count - (project.healthy_count + project.degraded_count + project.down_count));
 
   return (
     <div
       onClick={onClick}
-      className="clay-card cursor-pointer group flex flex-col p-5"
-      onMouseEnter={e => {
-        (e.currentTarget as HTMLElement).style.borderColor = 'rgba(99,102,241,0.4)';
-      }}
-      onMouseLeave={e => {
-        (e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.4)';
-      }}
+      className="clay-card cursor-pointer group flex flex-col p-5 bg-white border border-slate-200 rounded-2xl shadow-xs hover:border-blue-400 hover:shadow-md transition-all"
     >
       {/* Top row */}
-      <div className="flex items-start justify-between mb-3">
+      <div className="flex items-start justify-between mb-3 gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300 group-hover:scale-105"
-            style={{ background: 'var(--primary-transparent)', border: '1px solid rgba(99,102,241,0.2)' }}
+            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300 group-hover:scale-105 bg-blue-50 text-blue-600 border border-blue-100"
           >
-            <Globe size={18} style={{ color: 'var(--primary-light)' }} />
+            <Globe size={18} />
           </div>
           <div className="min-w-0">
-            <h3 className="font-semibold text-sm truncate text-[var(--text-primary)] mb-0.5" title={project.name}>
+            <h3 className="font-bold text-sm truncate text-slate-900 mb-0.5" title={project.name}>
               {project.name}
             </h3>
-            <p className="text-[11px] truncate" style={{ color: 'var(--muted)' }} title={project.url}>
-              {project.url.replace(/^https?:\/\//, '')}
+            {/* Exact target URL preserved and displayed */}
+            <p className="text-[11px] truncate text-slate-500 font-mono" title={project.url}>
+              {project.url}
             </p>
           </div>
         </div>
         <StatusBadge status={project.status} />
       </div>
 
-      {/* Health bar */}
+      {/* Health bar with all supported health states */}
       <div className="my-3">
         <HealthBar
           healthy={project.healthy_count}
           degraded={project.degraded_count}
           down={project.down_count}
+          unknown={unknownCount}
           total={project.endpoint_count}
         />
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-3 gap-2 mt-auto">
-        {[
-          { label: 'Endpoints', value: project.endpoint_count, color: 'var(--text-primary)' },
-          { label: 'Healthy', value: project.healthy_count, color: 'var(--success)' },
-          { label: 'Down', value: project.down_count, color: project.down_count > 0 ? 'var(--error)' : 'var(--muted)' },
-        ].map(({ label, value, color }) => (
-          <div
-            key={label}
-            className="rounded-xl py-2 px-3 text-center"
-            style={{ background: 'var(--bg-dark)', border: '1px solid var(--border-color)' }}
-          >
-            <div className="text-[10px] font-medium mb-1" style={{ color: 'var(--muted)' }}>{label}</div>
-            <div className="text-lg font-bold stat-counter" style={{ color }}>{value}</div>
-          </div>
-        ))}
+      {/* Stats row with project-specific counts: Endpoints, Healthy, Degraded, Down, Unknown */}
+      <div className="grid grid-cols-4 gap-1.5 mt-auto">
+        <div className="rounded-xl py-2 px-1 text-center bg-slate-50 border border-slate-100">
+          <div className="text-[10px] font-medium text-slate-500 mb-0.5">Total</div>
+          <div className="text-base font-bold text-slate-900">{project.endpoint_count}</div>
+        </div>
+        <div className="rounded-xl py-2 px-1 text-center bg-emerald-50/60 border border-emerald-100/60">
+          <div className="text-[10px] font-medium text-emerald-700 mb-0.5">Healthy</div>
+          <div className="text-base font-bold text-emerald-600">{project.healthy_count}</div>
+        </div>
+        <div className="rounded-xl py-2 px-1 text-center bg-amber-50/60 border border-amber-100/60">
+          <div className="text-[10px] font-medium text-amber-700 mb-0.5">Degraded</div>
+          <div className="text-base font-bold text-amber-600">{project.degraded_count}</div>
+        </div>
+        <div className="rounded-xl py-2 px-1 text-center bg-rose-50/60 border border-rose-100/60">
+          <div className="text-[10px] font-medium text-rose-700 mb-0.5">Down</div>
+          <div className="text-base font-bold text-rose-600">{project.down_count}</div>
+        </div>
       </div>
 
       {/* Score bar */}
-      {project.endpoint_count > 0 && (
+      {project.endpoint_count > 0 ? (
         <div className="mt-3 flex items-center gap-2">
-          <TrendingUp size={11} style={{ color: 'var(--muted)' }} />
-          <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'rgba(0,0,0,0.06)' }}>
+          <TrendingUp size={11} className="text-slate-400" />
+          <div className="flex-1 h-1.5 rounded-full overflow-hidden bg-slate-100">
             <div
-              className="h-full rounded-full"
+              className="h-full rounded-full transition-all duration-500"
               style={{
                 width: `${score}%`,
-                background: score >= 80
-                  ? 'linear-gradient(90deg, var(--success), #34d399)'
-                  : score >= 50
-                  ? 'linear-gradient(90deg, var(--warning), #fbbf24)'
-                  : 'linear-gradient(90deg, var(--error), #f87171)',
-                transition: 'width 0.8s ease',
+                background: score >= 80 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444'
               }}
             />
           </div>
-          <span className="text-[10px] font-semibold" style={{ color: 'var(--muted)' }}>{score.toFixed(0)}%</span>
+          <span className="text-[10px] font-semibold text-slate-500">{score.toFixed(0)}%</span>
+        </div>
+      ) : (
+        <div className="mt-3 flex items-center justify-between text-[10px] text-slate-400 font-medium">
+          <span>No endpoints registered</span>
+          <span className="text-blue-600 font-semibold group-hover:underline">Discover →</span>
         </div>
       )}
 
       {/* Hover arrow */}
-      <div
-        className="flex items-center gap-1 mt-3 text-[11px] font-medium opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ color: 'var(--primary-light)' }}
-      >
-        View project <ExternalLink size={11} />
+      <div className="flex items-center gap-1 mt-2 text-[11px] font-medium text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity">
+        View project details <ExternalLink size={11} />
       </div>
     </div>
   );
@@ -164,11 +165,18 @@ export const Dashboard = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [urlTouched, setUrlTouched] = useState(false);
+  const [projectSearch, setProjectSearch] = useState('');
+  const [projectStatusFilter, setProjectStatusFilter] = useState('ALL');
 
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const { data: projects, isLoading: projectsLoading } = useQuery({
+  const {
+    data: projects,
+    isLoading: projectsLoading,
+    error: projectsError,
+    refetch: refetchProjects
+  } = useQuery({
     queryKey: ['projects'],
     queryFn: () => apiFetch<Project[]>('/projects'),
     refetchInterval: 10000,
@@ -190,6 +198,14 @@ export const Dashboard = () => {
     queryKey: ['incidents'],
     queryFn: () => apiFetch<any[]>('/incidents?limit=5'),
     refetchInterval: 10000,
+  });
+
+  const filteredProjects = (projects || []).filter(p => {
+    const matchesSearch = !projectSearch ||
+      p.name.toLowerCase().includes(projectSearch.toLowerCase()) ||
+      p.url.toLowerCase().includes(projectSearch.toLowerCase());
+    const matchesStatus = projectStatusFilter === 'ALL' || p.status === projectStatusFilter;
+    return matchesSearch && matchesStatus;
   });
 
   const activeProjectsCount = stats?.total_projects ?? projects?.length ?? 0;
@@ -495,38 +511,112 @@ export const Dashboard = () => {
         </div>
       </div>
 
-      {/* ── Projects List ── */}
+      {/* ── Active Projects List ── */}
       <div className="mt-4">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
           <div className="flex items-center gap-3">
-            <Layers size={18} style={{ color: 'var(--primary-light)' }} />
-            <h2 className="text-xl font-bold">Active Projects</h2>
-          </div>
-          {activeProjectsCount > 0 && (
-            <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--muted)' }}>
-              <Clock size={12} />
-              Refreshes every 10s
+            <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
+              <Layers size={18} />
             </div>
-          )}
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-slate-900">Active Projects</h2>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                  {projects?.length ?? 0}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">Monitored targets and discovered endpoint health</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search Input */}
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search projects..."
+                value={projectSearch}
+                onChange={e => setProjectSearch(e.target.value)}
+                className="pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-40 sm:w-48"
+              />
+            </div>
+
+            {/* Status Filter */}
+            <div className="relative">
+              <select
+                value={projectStatusFilter}
+                onChange={e => setProjectStatusFilter(e.target.value)}
+                className="text-xs font-medium bg-white border border-slate-200 text-slate-700 rounded-xl px-2.5 py-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="ALL">All Status</option>
+                <option value="HEALTHY">Healthy</option>
+                <option value="DEGRADED">Degraded</option>
+                <option value="DOWN">Down</option>
+                <option value="UNKNOWN">Unknown</option>
+              </select>
+            </div>
+
+            <button
+              onClick={() => navigate('/projects/new')}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors"
+            >
+              <Plus size={14} /> Add
+            </button>
+          </div>
         </div>
 
+        {/* Error state */}
+        {projectsError && (
+          <div className="p-5 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-rose-800 mb-4">
+            <div className="flex items-center gap-3">
+              <AlertOctagon size={20} className="text-rose-600 flex-shrink-0" />
+              <div>
+                <div className="text-sm font-bold">Failed to load active projects</div>
+                <div className="text-xs text-rose-600">{(projectsError as any)?.message || 'Database or network communication error.'}</div>
+              </div>
+            </div>
+            <button
+              onClick={() => refetchProjects()}
+              className="px-3 py-1.5 bg-white border border-rose-200 rounded-xl text-xs font-bold hover:bg-rose-100 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* Loading state */}
         {projectsLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {[1, 2, 3].map(i => (
               <div
                 key={i}
-                className="rounded-2xl h-48 shimmer"
-                style={{ border: '1px solid var(--border-color)' }}
-              />
+                className="rounded-2xl h-48 bg-white border border-slate-200 p-5 animate-pulse"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 bg-slate-100 rounded w-2/3" />
+                    <div className="h-3 bg-slate-100 rounded w-1/2" />
+                  </div>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full my-4" />
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="h-10 bg-slate-100 rounded-lg" />
+                  <div className="h-10 bg-slate-100 rounded-lg" />
+                  <div className="h-10 bg-slate-100 rounded-lg" />
+                  <div className="h-10 bg-slate-100 rounded-lg" />
+                </div>
+              </div>
             ))}
           </div>
-        ) : projects && projects.length > 0 ? (
+        ) : filteredProjects.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {projects.map((project, idx) => (
+            {filteredProjects.map((project, idx) => (
               <div
                 key={project.id}
                 className="animate-slide-up"
-                style={{ animationDelay: `${idx * 60}ms` }}
+                style={{ animationDelay: `${idx * 50}ms` }}
               >
                 <ProjectCard
                   project={project}
@@ -536,23 +626,33 @@ export const Dashboard = () => {
             ))}
           </div>
         ) : (
-          <div
-            className="text-center py-20 rounded-2xl"
-            style={{
-              background: 'var(--bg-card)',
-              border: '1px dashed rgba(99,102,241,0.2)',
-            }}
-          >
-            <div
-              className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 animate-float"
-              style={{ background: 'var(--primary-transparent)', border: '1px solid rgba(99,102,241,0.2)' }}
-            >
-              <Globe size={28} style={{ color: 'var(--primary-light)' }} />
+          <div className="text-center py-16 px-4 bg-white rounded-2xl border border-slate-200 shadow-xs">
+            <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center mx-auto mb-3 text-blue-600">
+              <Globe size={26} />
             </div>
-            <h3 className="text-lg font-semibold mb-2">No projects yet</h3>
-            <p className="text-sm max-w-sm mx-auto" style={{ color: 'var(--text-secondary)' }}>
-              Enter your API URL above to start discovering and monitoring your first project.
+            <h3 className="text-base font-bold text-slate-900 mb-1">
+              {projectSearch || projectStatusFilter !== 'ALL' ? 'No matching projects found' : 'No monitored projects yet'}
+            </h3>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto mb-4">
+              {projectSearch || projectStatusFilter !== 'ALL'
+                ? 'Try adjusting your search criteria or clearing your filters.'
+                : 'Enter your API or Web App URL in the command bar above to start automated continuous discovery.'}
             </p>
+            {projectSearch || projectStatusFilter !== 'ALL' ? (
+              <button
+                onClick={() => { setProjectSearch(''); setProjectStatusFilter('ALL'); }}
+                className="px-4 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors text-slate-700"
+              >
+                Clear Filters
+              </button>
+            ) : (
+              <button
+                onClick={() => navigate('/projects/new')}
+                className="px-4 py-2 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-colors"
+              >
+                Add Your First Project
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -29,9 +29,9 @@ class DiscoveryRunRepository:
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
-    async def get_by_id(self, run_id: uuid.UUID) -> DiscoveryRun | None:
+    async def get_by_id(self, run_id: uuid.UUID | str) -> DiscoveryRun | None:
         try:
-            return await self._session.get(DiscoveryRun, run_id)
+            return await self._session.get(DiscoveryRun, str(run_id))
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
@@ -120,9 +120,9 @@ class DiscoveryCandidateRepository:
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
-    async def get_by_id(self, candidate_id: uuid.UUID) -> DiscoveryCandidate | None:
+    async def get_by_id(self, candidate_id: uuid.UUID | str) -> DiscoveryCandidate | None:
         try:
-            return await self._session.get(DiscoveryCandidate, candidate_id)
+            return await self._session.get(DiscoveryCandidate, str(candidate_id))
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
@@ -142,10 +142,10 @@ class DiscoveryCandidateRepository:
             raise DatabaseUnavailableError() from exc
 
     async def mark_accepted(
-        self, candidate_id: uuid.UUID, endpoint_id: uuid.UUID
+        self, candidate_id: uuid.UUID | str, endpoint_id: uuid.UUID | str
     ) -> None:
         try:
-            candidate = await self._session.get(DiscoveryCandidate, candidate_id)
+            candidate = await self._session.get(DiscoveryCandidate, str(candidate_id))
             if candidate:
                 candidate.accepted = True
                 candidate.endpoint_id = str(endpoint_id)

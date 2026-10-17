@@ -45,7 +45,7 @@ class EndpointService:
     async def list_all(
         self,
         enabled_only: bool = False,
-        project_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | str | None = None,
         health_state: str | None = None,
     ) -> list[EndpointSummary]:
         endpoints = await self._repo.get_all(
@@ -74,7 +74,32 @@ class EndpointService:
         endpoint = await self._repo.get_by_id(endpoint_id)
         if endpoint is None:
             raise NotFoundError("Endpoint", str(endpoint_id))
+
+        project_id = endpoint.project_id
+
+        # Disassociate linked discovery candidates without deleting discovery history
+        from sqlalchemy import update
+        from app.models.discovery_candidate import DiscoveryCandidate
+        from app.models.project import Project
+        from app.repositories.project import ProjectRepository
+
+        stmt = (
+            update(DiscoveryCandidate)
+            .where(DiscoveryCandidate.endpoint_id == str(endpoint_id))
+            .values(accepted=False, endpoint_id=None)
+        )
+        await self._repo._session.execute(stmt)
+
         await self._repo.delete(endpoint)
+
+        if project_id:
+            try:
+                proj = await self._repo._session.get(Project, str(project_id))
+                if proj:
+                    await ProjectRepository(self._repo._session).sync_project_counts([proj])
+            except Exception as e:
+                logger.warning("sync_project_counts_after_delete_failed", error=str(e))
+
         logger.info("endpoint_deleted", endpoint_id=str(endpoint_id))
 
     async def toggle_enabled(self, endpoint_id: uuid.UUID, enabled: bool) -> EndpointOut:

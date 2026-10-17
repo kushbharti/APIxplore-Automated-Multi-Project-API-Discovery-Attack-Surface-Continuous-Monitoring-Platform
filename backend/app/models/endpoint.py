@@ -15,7 +15,6 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -65,7 +64,7 @@ class Endpoint(UUIDMixin, TimestampMixin, Base):
 
     # --- Project association ---
     project_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
         index=True,

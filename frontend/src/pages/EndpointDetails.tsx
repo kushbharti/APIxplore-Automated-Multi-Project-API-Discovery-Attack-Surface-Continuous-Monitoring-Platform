@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
-import { ArrowLeft, Activity, Clock, ShieldCheck, AlertOctagon, Settings2, ShieldAlert, CheckCircle2, XCircle } from 'lucide-react';
+import { ArrowLeft, Activity, Clock, ShieldCheck, AlertOctagon, Settings2, ShieldAlert, CheckCircle2, XCircle, Server } from '../components/icons';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, AreaChart, Area } from 'recharts';
 import type { Endpoint } from '../types';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
 import { formatDate, formatRelative } from '../utils/date';
-import { Server } from 'lucide-react';
 
+
+import { ResponseViewer } from '../components/ResponseViewer';
 
 function MethodBadge({ method }: { method: string }) {
   const cls = {
@@ -21,8 +22,6 @@ function MethodBadge({ method }: { method: string }) {
 }
 
 // ─── Endpoint Response Section ──────────────────────────────────────────────
-
-const DISPLAY_BODY_LIMIT = 10_000; // chars shown in the UI
 
 function statusColor(code: number | null | undefined): string {
   if (!code) return 'var(--muted)';
@@ -38,15 +37,6 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function tryPrettyJson(raw: string): { isJson: boolean; display: string } {
-  try {
-    const parsed = JSON.parse(raw);
-    return { isJson: true, display: JSON.stringify(parsed, null, 2) };
-  } catch {
-    return { isJson: false, display: raw };
-  }
-}
-
 function EndpointResponseSection({
   latestResponse,
   onRunCheck,
@@ -54,8 +44,6 @@ function EndpointResponseSection({
   latestResponse: any;
   onRunCheck: () => void;
 }) {
-  const [showRaw, setShowRaw] = useState(false);
-
   if (latestResponse === undefined) {
     // Still loading
     return null;
@@ -86,12 +74,7 @@ function EndpointResponseSection({
   }
 
   const rawBody: string = latestResponse.response_body ?? '';
-  const isBodyTruncated = rawBody.length > DISPLAY_BODY_LIMIT;
-  const displayBody = rawBody.slice(0, DISPLAY_BODY_LIMIT);
   const ct: string = latestResponse.content_type ?? '';
-  const isJsonCt = ct.toLowerCase().includes('json');
-  const { isJson, display: prettyBody } = tryPrettyJson(displayBody);
-  const useJson = (isJsonCt || isJson) && !showRaw;
 
   return (
     <Card className="p-6 animate-fade-in">
@@ -100,14 +83,6 @@ function EndpointResponseSection({
           <Server size={16} className="text-[var(--primary-light)]" />
           Endpoint Response
         </h3>
-        {rawBody && (
-          <button
-            onClick={() => setShowRaw(r => !r)}
-            className="text-xs px-3 py-1 rounded-lg border border-[var(--border-color)] text-[var(--muted)] hover:text-white transition-colors"
-          >
-            {showRaw ? 'Pretty' : 'Raw'}
-          </button>
-        )}
       </div>
 
       {/* Metadata grid */}
@@ -169,25 +144,11 @@ function EndpointResponseSection({
               : 'No response body captured.'}
           </div>
         ) : (
-          <div className="relative">
-            <pre
-              className="text-xs leading-relaxed overflow-auto rounded-xl p-4 max-h-[400px]"
-              style={{
-                background: 'rgba(0,0,0,0.06)',
-                border: '1px solid var(--border-color)',
-                color: useJson ? '#a5f3fc' : 'var(--text-secondary)',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-              }}
-            >
-              {useJson ? prettyBody : displayBody}
-            </pre>
-            {isBodyTruncated && (
-              <div className="mt-2 text-xs text-[var(--warning)] text-center">
-                Response body truncated at {(DISPLAY_BODY_LIMIT / 1000).toFixed(0)} KB — full response stored in backend.
-              </div>
-            )}
-          </div>
+          <ResponseViewer
+            responseBody={rawBody}
+            contentType={ct}
+            statusCode={latestResponse.status_code}
+          />
         )}
       </div>
     </Card>
@@ -302,7 +263,7 @@ export const EndpointDetails = () => {
       {/* ── Back nav ── */}
       <button
         onClick={() => navigate(-1)}
-        className="inline-flex items-center gap-2 text-sm w-fit transition-colors text-[var(--muted)] hover:text-white"
+        className="inline-flex items-center gap-2 text-sm w-fit transition-colors text-[var(--muted)] hover:text-blue-600 font-medium"
       >
         <ArrowLeft size={16} /> Back
       </button>
@@ -571,7 +532,7 @@ export const EndpointDetails = () => {
             <div className="grid grid-cols-2 gap-6">
               <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-[var(--text-primary)]">Check Interval</label>
-                <select name="check_interval" defaultValue={endpoint.check_interval_seconds} className="bg-[rgba(0,0,0,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)]">
+                <select name="check_interval" defaultValue={endpoint.check_interval_seconds} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors cursor-pointer">
                   <option value={10}>10 Seconds (Aggressive)</option>
                   <option value={30}>30 Seconds</option>
                   <option value={60}>1 Minute (Standard)</option>
@@ -581,7 +542,7 @@ export const EndpointDetails = () => {
 
               <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-[var(--text-primary)]">Timeout</label>
-                <select name="timeout" defaultValue={endpoint.timeout_ms} className="bg-[rgba(0,0,0,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)]">
+                <select name="timeout" defaultValue={endpoint.timeout_ms} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors cursor-pointer">
                   <option value={2000}>2 Seconds</option>
                   <option value={5000}>5 Seconds (Standard)</option>
                   <option value={10000}>10 Seconds</option>
@@ -593,7 +554,7 @@ export const EndpointDetails = () => {
             <div className="grid grid-cols-2 gap-6">
               <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-[var(--text-primary)]">Failure Threshold</label>
-                <select name="failure_threshold" defaultValue={endpoint.failure_threshold} className="bg-[rgba(0,0,0,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)]">
+                <select name="failure_threshold" defaultValue={endpoint.failure_threshold} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors cursor-pointer">
                   <option value={1}>1 Check (Immediate)</option>
                   <option value={3}>3 Checks (Standard)</option>
                   <option value={5}>5 Checks (Forgiving)</option>
@@ -602,7 +563,7 @@ export const EndpointDetails = () => {
 
               <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-[var(--text-primary)]">Latency Alert Threshold</label>
-                <select name="latency_threshold" defaultValue={endpoint.latency_threshold_ms} className="bg-[rgba(0,0,0,0.03)] border border-[var(--border-color)] rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-[var(--primary)]">
+                <select name="latency_threshold" defaultValue={endpoint.latency_threshold_ms} className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:border-[var(--primary)] transition-colors cursor-pointer">
                   <option value={500}>500ms</option>
                   <option value={1000}>1 Second</option>
                   <option value={2000}>2 Seconds (Standard)</option>

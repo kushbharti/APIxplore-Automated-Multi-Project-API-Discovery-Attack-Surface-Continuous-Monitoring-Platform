@@ -21,10 +21,18 @@ from app.db.session import get_db
 from app.monitoring.checker import run_check
 from app.repositories.endpoint import EndpointRepository, HealthCheckRepository
 from app.schemas.common import DataResponse
-from app.schemas.endpoint import EndpointCreate, EndpointOut, EndpointSummary, EndpointUpdate
-from app.schemas.incident import HealthCheckOut
+from app.schemas.endpoint import (
+    EndpointCheckRequest,
+    EndpointCreate,
+    EndpointOut,
+    EndpointSchemaOut,
+    EndpointSummary,
+    EndpointUpdate,
+)
+from app.schemas.incident import HealthCheckOut, HealthCheckResponseOut
 from app.schemas.monitoring import MonitoringConfigOut, MonitoringConfigUpdate
 from app.services.endpoint import EndpointService
+from app.services.endpoint_schema import get_endpoint_schema
 
 logger = structlog.get_logger(__name__)
 
@@ -65,7 +73,7 @@ async def list_endpoints(
     request: Request,
     svc: SvcDep,
     enabled_only: bool = Query(False),
-    project_id: uuid.UUID | None = Query(None),
+    project_id: str | None = Query(None),
     health_state: str | None = Query(None),
 ) -> DataResponse[list[EndpointSummary]]:
     """List all endpoints with optional filters."""
@@ -197,15 +205,35 @@ async def update_endpoint_monitoring(
     return DataResponse(data=data, request_id=rid)
 
 
-@router.post("/{endpoint_id}/check", response_model=DataResponse[HealthCheckOut])
+@router.get("/{endpoint_id}/schema", response_model=DataResponse[EndpointSchemaOut])
+async def get_endpoint_schema_details(
+    endpoint_id: uuid.UUID,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> DataResponse[EndpointSchemaOut]:
+    """Get endpoint parameter and request body schema based on discovery metadata or OpenAPI spec."""
+    rid = getattr(request.state, "request_id", "unknown")
+    repo = EndpointRepository(session)
+    endpoint = await repo.get_by_id(endpoint_id)
+    if endpoint is None:
+        raise NotFoundError("Endpoint", str(endpoint_id))
+
+    schema = await get_endpoint_schema(endpoint, session)
+    return DataResponse(data=schema, request_id=rid)
+
+
+@router.post("/{endpoint_id}/check", response_model=DataResponse[HealthCheckResponseOut])
+@router.post("/{endpoint_id}/checks", response_model=DataResponse[HealthCheckResponseOut])
 async def check_endpoint_now(
     endpoint_id: uuid.UUID,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db)],
-) -> DataResponse[HealthCheckOut]:
+    body: EndpointCheckRequest | None = None,
+) -> DataResponse[HealthCheckResponseOut]:
     """
-    Trigger an immediate health check for an endpoint.
+    Trigger an immediate health check / test request for an endpoint.
 
+    Supports optional path_params, query_params, headers, and body fields.
     Does not wait for the next scheduled check.
     """
     from app.models.health_check import HealthCheck
@@ -216,8 +244,21 @@ async def check_endpoint_now(
     if endpoint is None:
         raise NotFoundError("Endpoint", str(endpoint_id))
 
-    # Run the check
-    result = await run_check(endpoint)
+    path_params = body.path_params if body else None
+    query_params = body.query_params if body else None
+    headers = body.headers if body else None
+    req_body = body.body if body else None
+    content_type = body.content_type if body else None
+
+    # Run the check with provided params/body
+    result = await run_check(
+        endpoint,
+        path_params=path_params,
+        query_params=query_params,
+        headers=headers,
+        body=req_body,
+        content_type=content_type,
+    )
 
     # Persist the result
     check = HealthCheck(
@@ -244,10 +285,11 @@ async def check_endpoint_now(
         "manual_check_completed",
         endpoint_id=str(endpoint_id),
         success=result.success,
+        status_code=result.status_code,
         latency_ms=result.latency_ms,
     )
 
-    return DataResponse(data=HealthCheckOut.model_validate(check), request_id=rid)
+    return DataResponse(data=HealthCheckResponseOut.model_validate(check), request_id=rid)
 
 
 @router.get("/{endpoint_id}/health", response_model=DataResponse[list[HealthCheckOut]])

@@ -12,10 +12,9 @@ from __future__ import annotations
 import enum
 
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUIDMixin, TimestampMixin
 
 
 class DiscoverySource(str, enum.Enum):
@@ -47,7 +46,7 @@ class VerificationStatus(str, enum.Enum):
     NOT_VERIFIED = "NOT_VERIFIED"   # Source-only discovery (e.g. GitHub without deployment URL)
 
 
-class DiscoveryCandidate(UUIDMixin, TimestampMixin, Base):
+class DiscoveryCandidate(StringUUIDMixin, TimestampMixin, Base):
     """
     A single endpoint candidate discovered during a discovery run.
 
@@ -57,14 +56,14 @@ class DiscoveryCandidate(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "discovery_candidates"
 
     run_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("discovery_runs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
     project_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -99,7 +98,7 @@ class DiscoveryCandidate(UUIDMixin, TimestampMixin, Base):
     # Whether this candidate was accepted into the endpoint registry
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     endpoint_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False), nullable=True
+        String(36), nullable=True
     )  # FK set when accepted (soft link)
 
     # Relationships

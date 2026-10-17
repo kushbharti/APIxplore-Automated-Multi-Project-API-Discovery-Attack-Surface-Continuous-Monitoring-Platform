@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
-import { Cpu, Server, Database, HardDrive, LayoutGrid, Clock, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Cpu, Server, Database, HardDrive, LayoutGrid, Clock, ShieldCheck, AlertTriangle } from '../components/icons';
 import { Card } from '../components/Card';
 import { Badge } from '../components/Badge';
 

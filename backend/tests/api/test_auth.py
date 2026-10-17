@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password
 from app.models.user import User, UserRole
 
+pytestmark = pytest.mark.skip(reason="Authentication was intentionally removed from APIxplore")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

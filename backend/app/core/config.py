@@ -77,6 +77,11 @@ class Settings(BaseSettings):
         alias="ALLOWED_DOMAINS",
         description="Comma-separated list of allowed target hostnames for discovery.",
     )
+    google_client_id: str | None = Field(
+        default=None,
+        alias="GOOGLE_CLIENT_ID",
+        description="Optional Google OAuth Client ID for target authentication and SSO.",
+    )
 
     @property
     def allowed_domains(self) -> list[str]:

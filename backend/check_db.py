@@ -1,11 +1,17 @@
-import sqlite3
-conn = sqlite3.connect('db.sqlite3')
-c = conn.cursor()
-tables = c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-print("Tables:", [t[0] for t in tables])
-# Show endpoint columns
-cols = c.execute("PRAGMA table_info(endpoints)").fetchall()
-print("\nEndpoint columns:", [(col[1], col[2]) for col in cols])
-ver = c.execute("SELECT * FROM alembic_version").fetchall()
-print("\nAlembic version:", ver)
-conn.close()
+import asyncio
+from sqlalchemy import text
+from app.db.session import get_engine
+
+async def main():
+    engine = get_engine()
+    async with engine.connect() as conn:
+        print("Connected to:", engine.url.render_as_string(hide_password=True))
+        tables = await conn.execute(text(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+        ))
+        print("Tables:", [r[0] for r in tables.fetchall()])
+        ver = await conn.execute(text("SELECT version_num FROM alembic_version"))
+        print("Alembic version:", [r[0] for r in ver.fetchall()])
+
+if __name__ == "__main__":
+    asyncio.run(main())

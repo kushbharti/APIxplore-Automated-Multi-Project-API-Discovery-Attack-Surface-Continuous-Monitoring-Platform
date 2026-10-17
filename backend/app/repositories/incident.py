@@ -34,13 +34,15 @@ class IncidentRepository:
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
-    async def get_by_id(self, incident_id: uuid.UUID) -> Incident | None:
+    async def get_by_id(self, incident_id: uuid.UUID | str) -> Incident | None:
         try:
+            if isinstance(incident_id, str):
+                incident_id = uuid.UUID(incident_id)
             return await self._session.get(Incident, incident_id)
         except OperationalError as exc:
             raise DatabaseUnavailableError() from exc
 
-    async def get_active_for_endpoint(self, endpoint_id: uuid.UUID) -> Incident | None:
+    async def get_active_for_endpoint(self, endpoint_id: uuid.UUID | str) -> Incident | None:
         """Return the active (non-resolved) incident for an endpoint, if any."""
         try:
             stmt = select(Incident).where(

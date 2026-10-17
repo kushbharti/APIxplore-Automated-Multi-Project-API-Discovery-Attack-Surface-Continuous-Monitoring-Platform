@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError, SSRFBlockedError
 from app.core.ssrf import validate_url_for_outbound
 from app.db.session import get_db, get_session_factory
+from app.models.discovery_candidate import VerificationStatus
 from app.models.discovery_run import DiscoveryRun, DiscoveryStatus
 from app.models.endpoint import (
     DiscoveryConfidence,
@@ -31,6 +32,7 @@ from app.schemas.project import (
     AcceptCandidatesRequest,
     DiscoveryCandidateOut,
     DiscoveryRunOut,
+    DiscoveryStartRequest,
 )
 
 logger = structlog.get_logger(__name__)
@@ -48,6 +50,7 @@ async def start_discovery(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db)],
     background_tasks: BackgroundTasks,
+    body: DiscoveryStartRequest | None = None,
 ) -> DataResponse[DiscoveryRunOut]:
     """
     Start a discovery run for the project.
@@ -89,6 +92,7 @@ async def start_discovery(
     run_id = created_run.id
     project_url = project.url
     deployment_url = getattr(project, "deployment_url", None)
+    target_auth = body.auth_config if body else None
 
     # Launch discovery in the background (fresh session)
     async def _run_discovery() -> None:
@@ -101,10 +105,11 @@ async def start_discovery(
                     project_url,
                     bg_session,
                     deployment_url=deployment_url,
+                    auth_config=target_auth,
                 )
             except Exception:
                 logger.exception("background_discovery_failed", run_id=str(run_id))
-                bg_run = await bg_session.get(DiscoveryRun, run_id)
+                bg_run = await bg_session.get(DiscoveryRun, str(run_id))
                 if bg_run:
                     bg_run.status = DiscoveryStatus.FAILED.value
                     bg_run.error_message = "An unexpected error occurred during discovery."
@@ -213,48 +218,93 @@ async def accept_candidates(
     """
     rid = getattr(request.state, "request_id", "unknown")
 
+    from urllib.parse import urljoin
+    from sqlalchemy import select
+    from app.models.project import Project
+
     run_repo = DiscoveryRunRepository(session)
     run = await run_repo.get_by_id(run_id)
     if run is None:
         raise NotFoundError("DiscoveryRun", str(run_id))
 
+    project = await session.get(Project, str(run.project_id))
+    if project is None:
+        raise NotFoundError("Project", str(run.project_id))
+
     candidate_repo = DiscoveryCandidateRepository(session)
     created_count = 0
     skipped_count = 0
 
+    confidence_map = {
+        "HIGH": DiscoveryConfidence.HIGH.value,
+        "MEDIUM": DiscoveryConfidence.MEDIUM.value,
+        "LOW": DiscoveryConfidence.LOW.value,
+    }
+    source_map = {
+        "OPENAPI": DiscoverySource.OPENAPI.value,
+        "CRAWLER": DiscoverySource.CRAWLER.value,
+        "JAVASCRIPT": DiscoverySource.JAVASCRIPT.value,
+        "GITHUB": DiscoverySource.GITHUB.value if hasattr(DiscoverySource, "GITHUB") else DiscoverySource.MANUAL.value,
+    }
+
     for cid in body.candidate_ids:
         candidate = await candidate_repo.get_by_id(cid)
-        if candidate is None or candidate.run_id != str(run_id):
+        if candidate is None or str(candidate.run_id) != str(run_id):
             skipped_count += 1
             continue
         if candidate.accepted:
             skipped_count += 1
             continue
 
-        # Map discovery confidence to endpoint confidence
-        confidence_map = {
-            "HIGH": DiscoveryConfidence.HIGH.value,
-            "MEDIUM": DiscoveryConfidence.MEDIUM.value,
-            "LOW": DiscoveryConfidence.LOW.value,
-        }
-        source_map = {
-            "OPENAPI": DiscoverySource.OPENAPI.value,
-            "CRAWLER": DiscoverySource.CRAWLER.value,
-            "JAVASCRIPT": DiscoverySource.JAVASCRIPT.value,
-            "GITHUB": DiscoverySource.GITHUB.value if hasattr(DiscoverySource, "GITHUB") else DiscoverySource.MANUAL.value,
-        }
+        # Register and monitor only appropriately verified endpoints (skip web pages, invalid, blocked)
+        if candidate.verification_status in (
+            VerificationStatus.WEB_PAGE.value,
+            VerificationStatus.INVALID.value,
+            VerificationStatus.BLOCKED.value,
+        ):
+            logger.info(
+                "skip_non_api_candidate_registration",
+                candidate_id=str(cid),
+                status=candidate.verification_status,
+                path=candidate.path,
+            )
+            skipped_count += 1
+            continue
 
-        # Generate a name from the candidate
-        name = candidate.operation_id or f"{candidate.method} {candidate.path}"
+        # Resolve complete endpoint URL without inventing or altering base domains
+        clean_path = candidate.path if candidate.path.startswith("/") else f"/{candidate.path}"
+        if candidate.full_url and (candidate.full_url.startswith("http://") or candidate.full_url.startswith("https://")):
+            ep_url = candidate.full_url
+        elif project.deployment_url and (project.deployment_url.startswith("http://") or project.deployment_url.startswith("https://")):
+            ep_url = urljoin(project.deployment_url.rstrip("/") + "/", clean_path.lstrip("/"))
+        elif project.url.startswith("http://") or project.url.startswith("https://"):
+            ep_url = urljoin(project.url.rstrip("/") + "/", clean_path.lstrip("/"))
+        else:
+            ep_url = candidate.full_url or clean_path
+
+        # Duplicate check: prevent registering the same endpoint twice in the project
+        stmt = select(Endpoint).where(
+            Endpoint.project_id == str(project.id),
+            Endpoint.method == candidate.method.upper(),
+            (Endpoint.path == candidate.path) | (Endpoint.url == ep_url),
+        )
+        existing_ep = (await session.execute(stmt)).scalars().first()
+        if existing_ep:
+            await candidate_repo.mark_accepted(cid, uuid.UUID(str(existing_ep.id)))
+            skipped_count += 1
+            continue
+
+        # Generate readable name
+        name = candidate.operation_id or f"{candidate.method.upper()} {candidate.path}"
         if len(name) > 200:
             name = name[:197] + "..."
 
         endpoint = Endpoint(
-            project_id=run.project_id,
+            project_id=str(project.id),
             name=name,
             description=candidate.summary,
-            method=candidate.method,
-            url=candidate.full_url,
+            method=candidate.method.upper(),
+            url=ep_url,
             path=candidate.path,
             discovery_source=source_map.get(candidate.source, DiscoverySource.MANUAL.value),
             confidence=confidence_map.get(candidate.confidence, DiscoveryConfidence.MEDIUM.value),
@@ -273,21 +323,21 @@ async def accept_candidates(
         await candidate_repo.mark_accepted(cid, uuid.UUID(str(endpoint.id)))
         created_count += 1
 
+    # Synchronize project endpoint health counters
     if created_count > 0:
-        from app.models.project import Project
-        project = await session.get(Project, uuid.UUID(run.project_id))
-        if project:
-            project.endpoint_count += created_count
-            await session.flush()
+        await ProjectRepository(session).sync_project_counts(project.id)
+
+    await session.commit()
 
     logger.info(
         "candidates_accepted",
         run_id=str(run_id),
+        project_id=str(project.id),
         created=created_count,
         skipped=skipped_count,
     )
 
     return DataResponse(
-        data={"created": created_count, "skipped": skipped_count},
+        data={"created": created_count, "skipped": skipped_count, "total": len(body.candidate_ids)},
         request_id=rid,
     )

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
-import { Bell, Search, AlertTriangle, ShieldAlert, Info, Clock } from 'lucide-react';
+import { Bell, Search, AlertTriangle, ShieldAlert, Info, Clock } from '../components/icons';
 import { Badge } from '../components/Badge';
+import { formatDate } from '../utils/date';
 
 interface AlertEvent {
   id: string;
@@ -118,7 +119,7 @@ export const Alerts = () => {
               </div>
               <div className="col-span-2 text-[var(--text-secondary)] flex items-center gap-2 text-xs">
                 <Clock size={12} className="opacity-50" />
-                {new Date(alert.created_at).toLocaleString()}
+                {formatDate(alert.created_at)}
               </div>
             </div>
           ))}

@@ -61,3 +61,23 @@ class UserOut(BaseModel):
     is_active: bool
 
     model_config = {"from_attributes": True}
+
+
+class GoogleOAuthConfigOut(BaseModel):
+    """Google OAuth configuration for target login authentication."""
+    client_id: str
+    enabled: bool
+
+
+class GoogleVerifyRequest(BaseModel):
+    """Request payload to verify a Google OAuth token or credential."""
+    token: str = Field(min_length=1, max_length=8192)
+
+
+class GoogleVerifyOut(BaseModel):
+    """Verified identity from Google OAuth."""
+    valid: bool
+    email: str
+    name: str | None = None
+    picture: str | None = None
+

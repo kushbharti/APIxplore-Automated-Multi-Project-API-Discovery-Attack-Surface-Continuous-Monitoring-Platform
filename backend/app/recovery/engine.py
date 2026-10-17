@@ -34,9 +34,9 @@ RECOVERY_BACKOFF = BackoffConfig(max_attempts=MAX_RECOVERY_ATTEMPTS, initial_del
 
 
 async def attempt_recovery(
-    incident: Incident,
+    incident: Incident | str | uuid.UUID,
     failure_type: FailureClassification,
-    session: AsyncSession,
+    session: AsyncSession | None = None,
 ) -> bool:
     """
     Attempt recovery based on failure classification.
@@ -44,24 +44,54 @@ async def attempt_recovery(
     Returns True if recovery was successful (verification passed).
     Returns False and escalates if max attempts exhausted.
     """
+    if session is None:
+        from app.db.session import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as own_session:
+            try:
+                res = await _attempt_recovery_impl(incident, failure_type, own_session)
+                await own_session.commit()
+                return res
+            except Exception:
+                await own_session.rollback()
+                raise
+
+    return await _attempt_recovery_impl(incident, failure_type, session)
+
+
+async def _attempt_recovery_impl(
+    incident: Incident | str | uuid.UUID,
+    failure_type: FailureClassification,
+    session: AsyncSession,
+) -> bool:
     incident_repo = IncidentRepository(session)
     action_repo = RecoveryActionRepository(session)
     endpoint_repo = EndpointRepository(session)
 
-    attempt_num = incident.recovery_attempts + 1
+    incident_id = incident.id if isinstance(incident, Incident) else incident
+    if isinstance(incident_id, str):
+        incident_id = uuid.UUID(incident_id)
+
+    inc = await incident_repo.get_by_id(incident_id)
+    if inc is None:
+        logger.error("recovery_incident_not_found", incident_id=str(incident_id))
+        return False
+
+    attempt_num = inc.recovery_attempts + 1
 
     if attempt_num > MAX_RECOVERY_ATTEMPTS:
         logger.error(
             "recovery_max_attempts_exceeded",
-            incident_id=str(incident.id),
+            incident_id=str(inc.id),
             attempts=attempt_num,
         )
-        await _escalate(incident, incident_repo, action_repo)
+        await _escalate(inc, incident_repo, action_repo)
         return False
 
     # Update incident
     await incident_repo.update(
-        incident,
+        inc,
         recovery_attempts=attempt_num,
         recovery_started_at=datetime.now(UTC),
         status=IncidentStatus.RECOVERING.value,
@@ -73,7 +103,7 @@ async def attempt_recovery(
 
     logger.info(
         "recovery_attempt_started",
-        incident_id=str(incident.id),
+        incident_id=str(inc.id),
         action=action_type,
         attempt=attempt_num,
         failure_type=failure_type.value,
@@ -84,7 +114,7 @@ async def attempt_recovery(
 
     # Record the action
     ra = RecoveryAction(
-        incident_id=str(incident.id),
+        incident_id=str(inc.id),
         action_type=action_type,
         description=f"Recovery attempt {attempt_num} for {failure_type.value}",
         success=success,
@@ -99,17 +129,17 @@ async def attempt_recovery(
     if success:
         logger.info(
             "recovery_attempt_succeeded",
-            incident_id=str(incident.id),
+            incident_id=str(inc.id),
             attempt=attempt_num,
         )
         # Update endpoint health state
-        ep_id = uuid.UUID(incident.endpoint_id)
+        ep_id = uuid.UUID(str(inc.endpoint_id))
         await endpoint_repo.update_health_state(ep_id, HealthState.RECOVERING.value)
         return True
     else:
         logger.warning(
             "recovery_attempt_failed",
-            incident_id=str(incident.id),
+            incident_id=str(inc.id),
             attempt=attempt_num,
             error=error_detail,
         )

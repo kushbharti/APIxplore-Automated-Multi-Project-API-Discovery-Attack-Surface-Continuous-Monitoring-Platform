@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
-  Search, CheckCircle2, XCircle, Globe, GitBranch,
+  Search, CheckCircle2, XCircle, Globe,
   Clock, FileCode2, RefreshCw, Code2, Zap,
-} from 'lucide-react';
+} from '../components/icons';
 import { apiFetch } from '../lib/api';
 import { formatRelative, formatDate } from '../utils/date';
 import type { Project, DiscoveryRun } from '../types';
@@ -31,7 +31,6 @@ function DiscoveryRunCard({ run, project }: { run: DiscoveryRun; project: Projec
     { name: 'OpenAPI', checked: run.openapi_checked, icon: <FileCode2 size={12} /> },
     { name: 'Crawler', checked: run.crawl_checked,   icon: <Search size={12} /> },
     { name: 'JS Anal.', checked: run.js_checked,     icon: <Code2 size={12} /> },
-    { name: 'GitHub',   checked: (run as any).github_checked, icon: <GitBranch size={12} /> },
   ].filter(p => p.checked);
 
   return (
@@ -42,11 +41,7 @@ function DiscoveryRunCard({ run, project }: { run: DiscoveryRun; project: Projec
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
-            {project.url.includes('github.com') ? (
-              <GitBranch size={14} style={{ color: 'var(--muted)' }} />
-            ) : (
-              <Globe size={14} style={{ color: 'var(--muted)' }} />
-            )}
+            <Globe size={14} style={{ color: 'var(--muted)' }} />
             <span className="font-medium text-sm text-[var(--text-primary)]">{project.name}</span>
           </div>
           <span className="text-xs text-[var(--muted)]">{project.url}</span>

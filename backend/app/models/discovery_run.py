@@ -15,10 +15,9 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, StringUUIDMixin, TimestampMixin
 
 
 class DiscoveryStatus(str, enum.Enum):
@@ -29,7 +28,7 @@ class DiscoveryStatus(str, enum.Enum):
     PARTIAL = "PARTIAL"  # Some providers succeeded, some failed
 
 
-class DiscoveryRun(UUIDMixin, TimestampMixin, Base):
+class DiscoveryRun(StringUUIDMixin, TimestampMixin, Base):
     """
     One execution of the discovery engine for a project.
 
@@ -39,7 +38,7 @@ class DiscoveryRun(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "discovery_runs"
 
     project_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
+        String(36),
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

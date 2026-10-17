@@ -47,6 +47,8 @@ _VERIFY_TIMEOUT = 8.0
 _MAX_CONCURRENT = 10
 
 # Max body bytes to read for classification
+from urllib.parse import urlparse
+
 _MAX_BODY_BYTES = 256 * 1024  # 256 KB
 
 # Content-types that indicate an API (JSON, XML, protobuf, etc.)
@@ -64,9 +66,10 @@ _API_CONTENT_TYPES = {
     "application/x-ndjson",
     "application/x-msgpack",
     "application/octet-stream",
+    "application/graphql-response+json",
 }
 
-# Content-types that indicate a web page (never an API)
+# Content-types that indicate an HTML page (never an API)
 _HTML_CONTENT_TYPES = {
     "text/html",
     "application/xhtml+xml",
@@ -79,6 +82,7 @@ _API_PATH_PATTERNS = [
     re.compile(r"/v\d+/", re.IGNORECASE),
     re.compile(r"/graphql", re.IGNORECASE),
     re.compile(r"/rest/", re.IGNORECASE),
+    re.compile(r"/rpc/", re.IGNORECASE),
     re.compile(r"/gql\b", re.IGNORECASE),
     re.compile(r"\.json$", re.IGNORECASE),
     re.compile(r"\.xml$", re.IGNORECASE),
@@ -89,6 +93,24 @@ _HTML_BODY_PATTERNS = re.compile(
     r"<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>]",
     re.IGNORECASE,
 )
+
+# SPA shell signatures (served by try_files $uri /index.html)
+_SPA_SHELL_PATTERNS = [
+    re.compile(r'<div\s+id=["\'](?:root|app|__next|__nuxt|mount)["\']', re.IGNORECASE),
+    re.compile(r'<script\s+[^>]*src=["\'][^"\']*(?:/static/js/|/assets/|chunk)[^"\']*["\']', re.IGNORECASE),
+]
+
+# HTML error page signatures (Nginx 404/500, Cloudflare, Apache, generic error pages)
+_HTML_ERROR_PATTERNS = [
+    re.compile(r"<title>\s*(?:404|500|502|503|504|Error|Page Not Found|Not Found|Bad Gateway|Internal Server Error)", re.IGNORECASE),
+    re.compile(r"<h1>\s*(?:404|500|502|503|504|Error|Page Not Found|Not Found|Bad Gateway|Internal Server Error)", re.IGNORECASE),
+    re.compile(r"cloudflare\s+(?:ray\s+id|error|attention\s+required)", re.IGNORECASE),
+]
+
+# Auth/Login redirect paths
+_AUTH_PATH_PATTERNS = [
+    re.compile(r"/(?:login|signin|sign-in|auth|oauth|authorize|sso)(?:/|$|\?)", re.IGNORECASE),
+]
 
 
 def _extract_content_type_base(content_type: str) -> str:
@@ -126,110 +148,201 @@ def _body_looks_like_html(body: str) -> bool:
     return bool(_HTML_BODY_PATTERNS.search(body[:4096]))
 
 
+def _is_spa_fallback(body: str) -> bool:
+    """Return True if the HTML body looks like an SPA fallback shell (e.g. index.html)."""
+    sample = body[:8192]
+    return any(p.search(sample) for p in _SPA_SHELL_PATTERNS)
+
+
+def _is_html_error_page(body: str) -> bool:
+    """Return True if the HTML body contains standard HTML error markers."""
+    sample = body[:8192]
+    return any(p.search(sample) for p in _HTML_ERROR_PATTERNS)
+
+
+def _is_auth_redirect(final_url: str) -> bool:
+    """Return True if the final redirected URL points to an authentication or login page."""
+    parsed = urlparse(final_url)
+    if any(p.search(parsed.path) for p in _AUTH_PATH_PATTERNS):
+        return True
+    if parsed.netloc.startswith(("auth.", "login.", "sso.", "accounts.")):
+        return True
+    return False
+
+
+def _is_home_redirect(initial_url: str, final_url: str) -> bool:
+    """Return True if an API request was redirected to the root or home landing page."""
+    init_parsed = urlparse(initial_url)
+    fin_parsed = urlparse(final_url)
+    init_path = init_parsed.path.rstrip("/")
+    fin_path = fin_parsed.path.rstrip("/")
+    if init_path and (not fin_path or fin_path in ("/home", "/index.html")):
+        return True
+    return False
+
+
 def _classify_verification(
     http_status: int,
     content_type: str,
     body_sample: str,
     url: str,
+    method: str = "GET",
     source: str = "",
-) -> str:
+    redirect_count: int = 0,
+    final_url: str | None = None,
+) -> tuple[str, str | None]:
     """
-    Determine the VerificationStatus for a completed HTTP response.
+    Determine the VerificationStatus and diagnostic note for a completed HTTP response.
 
     Args:
-        http_status:   The HTTP status code received.
-        content_type:  The full Content-Type header value.
-        body_sample:   First few KB of the response body.
-        url:           The URL that was checked (for path analysis).
-        source:        Discovery source hint (e.g. "OPENAPI").
+        http_status:    The HTTP status code received.
+        content_type:   The full Content-Type header value.
+        body_sample:    First few KB of the response body.
+        url:            The URL that was probed.
+        method:         The discovered HTTP method of the endpoint candidate.
+        source:         Discovery source hint (e.g. "OPENAPI").
+        redirect_count: Number of redirects followed.
+        final_url:      Final URL after following redirects.
 
     Returns:
-        A VerificationStatus string value.
+        tuple[VerificationStatus, diagnostic_note]
     """
     ct_base = _extract_content_type_base(content_type)
+    resolved_final = final_url or url
 
     # -----------------------------------------------------------------
-    # OpenAPI-sourced endpoints: trust the spec even without JSON body
+    # OpenAPI-sourced endpoints: trust the spec documentation first
+    # (checked before redirect heuristics so spec endpoints aren't
+    # wrongly dismissed because of CORS/middleware redirects)
     # -----------------------------------------------------------------
     if source == "OPENAPI":
         if http_status == 404:
-            return "UNAVAILABLE"
+            # If the path has parameters (e.g. /users/{id}) or returns an API/JSON response,
+            # 404 means the entity/sample ID was not found in the DB, but the API endpoint route exists!
+            parsed_path = urlparse(url).path
+            has_path_params = "{" in parsed_path or ":" in parsed_path
+            if has_path_params or _is_api_content_type(ct_base) or _body_looks_like_json(body_sample):
+                return "VERIFIED", f"OpenAPI endpoint confirmed (HTTP 404 for sample parameter on {method})"
+            return "UNAVAILABLE", "OpenAPI endpoint returned 404 Not Found"
         if http_status in (401, 403):
-            return "AUTH_REQUIRED"
+            return "AUTH_REQUIRED", f"OpenAPI endpoint requires authentication (HTTP {http_status})"
+        if http_status in (405, 422):
+            return "VERIFIED", f"OpenAPI endpoint confirmed by server (HTTP {http_status})"
         if http_status in range(200, 500):
-            # OpenAPI spec is authoritative — endpoint exists
-            return "VERIFIED"
-        return "UNAVAILABLE"
+            return "VERIFIED", f"OpenAPI endpoint verified (HTTP {http_status})"
+        return "UNAVAILABLE", f"OpenAPI endpoint server error (HTTP {http_status})"
+
+    # -----------------------------------------------------------------
+    # Redirect Analysis (non-OpenAPI endpoints)
+    # -----------------------------------------------------------------
+    if redirect_count > 0 and final_url:
+        if _is_auth_redirect(final_url):
+            return "AUTH_REQUIRED", f"Redirected ({redirect_count} hops) to authentication page: {final_url}"
+        # Only classify as WEB_PAGE if the final response isn't API data
+        if _is_home_redirect(url, final_url):
+            if not (_is_api_content_type(ct_base) or _body_looks_like_json(body_sample)):
+                return "WEB_PAGE", f"Redirected ({redirect_count} hops) to landing page: {final_url}"
 
     # -----------------------------------------------------------------
     # 401 / 403 — endpoint exists but needs authentication
     # -----------------------------------------------------------------
     if http_status in (401, 403):
-        # Only mark AUTH_REQUIRED if there's JSON evidence or API path
-        from urllib.parse import urlparse
         path = urlparse(url).path
         has_api_path = any(p.search(path) for p in _API_PATH_PATTERNS)
         is_json_ct = _is_api_content_type(ct_base) or "json" in ct_base
         body_json = _body_looks_like_json(body_sample)
         if is_json_ct or body_json or has_api_path:
-            return "AUTH_REQUIRED"
-        return "UNAVAILABLE"
+            return "AUTH_REQUIRED", f"Authentication required (HTTP {http_status})"
+        return "UNAVAILABLE", f"Access denied (HTTP {http_status})"
+
+    # -----------------------------------------------------------------
+    # 405 Method Not Allowed — endpoint exists on router!
+    # Probing with safe GET on a POST/PUT/PATCH/DELETE route confirms route.
+    # -----------------------------------------------------------------
+    if http_status == 405:
+        target_method = method.upper()
+        if target_method != "GET":
+            return "VERIFIED", f"Route confirmed via HTTP 405 Method Not Allowed (endpoint accepts {target_method})"
+        return "VERIFIED", "Route exists on server (HTTP 405 Method Not Allowed for GET)"
+
+    # -----------------------------------------------------------------
+    # 400 / 422 — Validation errors confirm API route existence
+    # -----------------------------------------------------------------
+    if http_status in (400, 422):
+        if _is_api_content_type(ct_base) or _body_looks_like_json(body_sample):
+            return "VERIFIED", f"Route confirmed via HTTP {http_status} API validation error"
+        return "UNAVAILABLE", f"HTTP {http_status} Bad Request"
 
     # -----------------------------------------------------------------
     # 404 — endpoint does not exist at this path
     # -----------------------------------------------------------------
     if http_status == 404:
-        return "UNAVAILABLE"
+        return "UNAVAILABLE", "HTTP 404 Not Found"
 
     # -----------------------------------------------------------------
-    # 405 Method Not Allowed — endpoint exists, wrong method
+    # 5xx server errors
     # -----------------------------------------------------------------
-    if http_status == 405:
-        return "AUTH_REQUIRED"  # Exists, just reachable differently
+    if http_status in range(500, 600):
+        if _is_html_error_page(body_sample):
+            return "UNAVAILABLE", f"HTML error page returned (HTTP {http_status})"
+        return "UNAVAILABLE", f"Server error (HTTP {http_status})"
 
     # -----------------------------------------------------------------
     # 2xx responses — inspect content-type and body
     # -----------------------------------------------------------------
     if http_status in range(200, 300):
-        # HTML content-type → web page, not an API
+        # Masked HTML error page returning HTTP 200
+        if _is_html_error_page(body_sample):
+            return "UNAVAILABLE", f"Server returned HTML error page with HTTP {http_status}"
+
+        # SPA fallback shell (catch-all index.html served for missing route)
+        if _is_spa_fallback(body_sample):
+            return "WEB_PAGE", "SPA fallback detected (catch-all index.html served for route)"
+
+        # HTML content-type
         if _is_html_content_type(ct_base):
-            return "WEB_PAGE"
-        # Body looks like HTML even if content-type is ambiguous
+            path = urlparse(url).path
+            # Ordinary webpage without API path pattern
+            if not any(p.search(path) for p in _API_PATH_PATTERNS):
+                return "WEB_PAGE", "Ordinary HTML webpage"
+            # API path returning full HTML document
+            if _body_looks_like_html(body_sample):
+                return "WEB_PAGE", "HTML document returned for API route"
+            # API path returning HTML data fragment
+            return "VERIFIED", "HTML data response"
+
+        # Body looks like HTML even with generic/missing content-type
         if _body_looks_like_html(body_sample):
-            return "WEB_PAGE"
+            return "WEB_PAGE", "HTML page response"
+
         # Confirmed API content-type
         if _is_api_content_type(ct_base):
-            return "VERIFIED"
+            return "VERIFIED", f"Verified API response (HTTP {http_status}, {ct_base})"
+
         # JSON body even with generic content-type (e.g. text/plain)
         if _body_looks_like_json(body_sample):
-            return "VERIFIED"
-        # text/plain with no JSON — ambiguous; check path pattern
-        from urllib.parse import urlparse
+            return "VERIFIED", f"Verified JSON response (HTTP {http_status})"
+
+        # Empty body with 204 No Content or 2xx on API path
         path = urlparse(url).path
-        if any(p.search(path) for p in _API_PATH_PATTERNS):
-            return "VERIFIED"
-        # Empty body with 2xx — could be API or page; be conservative
-        if not body_sample.strip():
-            return "VERIFIED"
-        # Default: treat as web page when no API evidence
-        return "WEB_PAGE"
+        has_api_path = any(p.search(path) for p in _API_PATH_PATTERNS)
+        if http_status == 204 or not body_sample.strip():
+            if has_api_path or method.upper() != "GET":
+                return "VERIFIED", f"Verified API response (HTTP {http_status} empty body)"
+            return "VERIFIED", f"Empty response (HTTP {http_status})"
+
+        if has_api_path:
+            return "VERIFIED", "API route response"
+
+        return "WEB_PAGE", "Non-API response"
 
     # -----------------------------------------------------------------
-    # 3xx redirects (follow_redirects=True so we shouldn't hit these)
+    # 3xx unresolved redirects
     # -----------------------------------------------------------------
     if http_status in range(300, 400):
-        return "UNAVAILABLE"
+        return "UNAVAILABLE", f"Unresolved redirect (HTTP {http_status})"
 
-    # -----------------------------------------------------------------
-    # 5xx server errors — endpoint may exist but is broken
-    # -----------------------------------------------------------------
-    if http_status in range(500, 600):
-        return "UNAVAILABLE"
-
-    # -----------------------------------------------------------------
-    # Anything else
-    # -----------------------------------------------------------------
-    return "UNAVAILABLE"
+    return "UNAVAILABLE", f"Unexpected HTTP status {http_status}"
 
 
 @dataclass
@@ -241,6 +354,9 @@ class VerificationResult:
     http_status: int | None = None
     response_time_ms: float | None = None
     content_type: str | None = None
+    redirect_count: int = 0
+    final_url: str | None = None
+    diagnostic_notes: str | None = None
     error: str | None = None
 
 
@@ -249,21 +365,23 @@ async def verify_endpoint(
     method: str = "GET",
     source: str = "",
     client: httpx.AsyncClient | None = None,
+    headers: dict[str, str] | None = None,
 ) -> VerificationResult:
     """
     Verify a single endpoint candidate.
 
-    Uses GET to inspect the actual response body and content-type.
-    HEAD is NOT used because it often omits Content-Type and body.
+    Uses safe non-destructive probing to inspect response headers, body,
+    redirect history, and status codes.
 
     Args:
-        url:    Full URL to verify.
-        method: HTTP method originally discovered (informational only).
-        source: Discovery source (e.g. "OPENAPI") for classification hints.
-        client: Optional shared httpx client.
+        url:     Full URL to verify.
+        method:  HTTP method originally discovered.
+        source:  Discovery source (e.g. "OPENAPI") for classification hints.
+        client:  Optional shared httpx client.
+        headers: Optional auth headers for login-protected target probing.
 
     Returns:
-        VerificationResult with classification and timing.
+        VerificationResult with classification, timing, and diagnostic notes.
     """
     # 1. SSRF check — always first
     try:
@@ -276,26 +394,50 @@ async def verify_endpoint(
     # 2. HTTP request
     should_close = client is None
     if client is None:
+        client_headers = {"User-Agent": "APIMonitor-Verifier/1.0"}
+        if headers:
+            client_headers.update(headers)
         client = httpx.AsyncClient(
             timeout=_VERIFY_TIMEOUT,
             follow_redirects=True,
-            max_redirects=3,
-            headers={"User-Agent": "APIMonitor-Verifier/1.0"},
+            max_redirects=5,
+            headers=client_headers,
             limits=httpx.Limits(max_connections=20),
         )
 
     try:
-        # Use GET for safe methods to get body (needed for classification)
-        # Use HEAD only for non-idempotent methods to avoid side effects
-        probe_method = "GET" if method in ("GET", "HEAD", "OPTIONS") else "HEAD"
+        # Non-destructive probe: GET is safe and idempotent.
+        # For non-GET methods (POST, PUT, PATCH, DELETE), probing with GET gives response
+        # headers and body without triggering side effects. If server returns 405, it confirms the route.
+        probe_method = "GET" if method.upper() in ("GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE") else "GET"
+
+        req_headers = {"Accept": "application/json, text/html, */*;q=0.8"}
+        if headers:
+            req_headers.update(headers)
+
+        # For parameterized paths like /api/users/{id} or /api/items/:id,
+        # instantiate dummy parameter values for the probe request so HTTP client
+        # doesn't send raw curly braces to the server, while preserving original canonical URL.
+        probe_url = re.sub(r"\{[^{}]+\}", "1", url)
+        probe_url = re.sub(r"(?<=/):([a-zA-Z0-9_-]+)", "1", probe_url)
 
         start = time.perf_counter()
         response = await client.request(
             probe_method,
-            url,
-            headers={"Accept": "application/json, text/html, */*;q=0.8"},
+            probe_url,
+            headers=req_headers,
         )
         elapsed_ms = (time.perf_counter() - start) * 1000
+
+        # SSRF validation on redirect history
+        for hist in response.history:
+            if hist.next_request:
+                try:
+                    validate_url_for_outbound(str(hist.next_request.url), context="verification_redirect")
+                except SSRFBlockedError as exc:
+                    return VerificationResult(
+                        url=url, method=method, status="BLOCKED", error=f"Redirect blocked: {exc}"
+                    )
 
         http_status = response.status_code
         content_type = response.headers.get("content-type", "")
@@ -308,12 +450,18 @@ async def verify_endpoint(
         except Exception:
             body_sample = ""
 
-        status = _classify_verification(
+        redirect_count = len(response.history)
+        final_url = str(response.url)
+
+        status, note = _classify_verification(
             http_status=http_status,
             content_type=content_type,
             body_sample=body_sample,
             url=url,
+            method=method,
             source=source,
+            redirect_count=redirect_count,
+            final_url=final_url,
         )
 
         return VerificationResult(
@@ -323,8 +471,16 @@ async def verify_endpoint(
             http_status=http_status,
             response_time_ms=round(elapsed_ms, 1),
             content_type=_extract_content_type_base(content_type) or None,
+            redirect_count=redirect_count,
+            final_url=final_url,
+            diagnostic_notes=note,
+            error=note if status != "VERIFIED" else None,
         )
 
+    except httpx.TooManyRedirects:
+        return VerificationResult(
+            url=url, method=method, status="UNAVAILABLE", error="TOO_MANY_REDIRECTS"
+        )
     except httpx.TimeoutException:
         return VerificationResult(url=url, method=method, status="UNAVAILABLE", error="TIMEOUT")
     except httpx.ConnectError as exc:
@@ -346,23 +502,29 @@ async def verify_endpoint(
 
 async def verify_batch(
     candidates: list[tuple[str, str, str]],  # list of (url, method, source)
+    headers: dict[str, str] | None = None,
 ) -> list[VerificationResult]:
     """
     Verify multiple candidates concurrently with bounded parallelism.
 
     Args:
         candidates: List of (url, method, source) tuples.
+        headers:    Optional auth headers for login-protected target probing.
 
     Returns:
         List of VerificationResult in the same order.
     """
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
+    client_headers = {"User-Agent": "APIMonitor-Verifier/1.0"}
+    if headers:
+        client_headers.update(headers)
+
     async with httpx.AsyncClient(
         timeout=_VERIFY_TIMEOUT,
         follow_redirects=True,
         max_redirects=3,
-        headers={"User-Agent": "APIMonitor-Verifier/1.0"},
+        headers=client_headers,
         limits=httpx.Limits(max_connections=_MAX_CONCURRENT + 5),
     ) as client:
 
@@ -370,7 +532,7 @@ async def verify_batch(
             url: str, method: str, source: str
         ) -> VerificationResult:
             async with semaphore:
-                return await verify_endpoint(url, method, source=source, client=client)
+                return await verify_endpoint(url, method, source=source, client=client, headers=headers)
 
         tasks = [
             verify_with_semaphore(url, method, source)

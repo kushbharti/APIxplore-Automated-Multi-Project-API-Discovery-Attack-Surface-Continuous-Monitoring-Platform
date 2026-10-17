@@ -74,6 +74,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: ARG001
         environment=settings.app_env.value,
     )
 
+    # Ensure tables exist
+    try:
+        import app.models  # noqa: F401
+        from app.models.base import Base
+        from app.db.session import get_engine
+        async with get_engine().begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("db_tables_ensured")
+    except Exception:
+        logger.exception("failed_to_ensure_tables")
+
     # 2. Start APScheduler (Monitoring worker)
     scheduler = create_scheduler()
     if not settings.is_testing:

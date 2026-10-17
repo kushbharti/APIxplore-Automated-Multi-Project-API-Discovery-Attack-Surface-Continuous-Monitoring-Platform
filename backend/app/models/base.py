@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import DateTime, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -41,6 +41,20 @@ class UUIDMixin:
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+        nullable=False,
+    )
+
+
+class StringUUIDMixin:
+    """
+    Mixin that adds a 36-character string UUID primary key column named 'id'.
+    Matches tables where id is VARCHAR(36) (projects, discovery_runs, discovery_candidates).
+    """
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
         nullable=False,
     )
 

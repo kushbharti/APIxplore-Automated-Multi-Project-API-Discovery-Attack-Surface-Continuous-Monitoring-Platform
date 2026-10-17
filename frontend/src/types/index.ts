@@ -3,12 +3,15 @@ export interface Project {
   name: string;
   url: string;
   description: string | null;
+  source_type?: 'WEBSITE' | 'API' | 'AUTH_WEBSITE';
+  deployment_url?: string | null;
   status: 'UNKNOWN' | 'HEALTHY' | 'DEGRADED' | 'DOWN';
   health_score: number | null;
   endpoint_count: number;
   healthy_count: number;
   degraded_count: number;
   down_count: number;
+  unknown_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -16,12 +19,13 @@ export interface Project {
 export interface DiscoveryRun {
   id: string;
   project_id: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PARTIAL' | 'QUEUED';
   started_at: string | null;
   completed_at: string | null;
   openapi_checked: boolean;
   crawl_checked: boolean;
   js_checked: boolean;
+  github_checked?: boolean;
   openapi_found: boolean;
   openapi_url: string | null;
   candidates_total: number;
@@ -30,6 +34,7 @@ export interface DiscoveryRun {
   candidates_blocked: number;
   error_message: string | null;
   progress_state?: { step: string; timestamp: string; details: any };
+  provider_results?: Record<string, any>;
   created_at: string;
 }
 
@@ -40,12 +45,12 @@ export interface DiscoveryCandidate {
   method: string;
   path: string;
   full_url: string;
-  source: 'OPENAPI' | 'CRAWLER' | 'JAVASCRIPT';
+  source: 'OPENAPI' | 'CRAWLER' | 'JAVASCRIPT' | 'MANUAL';
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   operation_id: string | null;
   summary: string | null;
   tags: string | null;
-  verification_status: 'PENDING' | 'VERIFIED' | 'UNAVAILABLE' | 'BLOCKED';
+  verification_status: 'PENDING' | 'VERIFIED' | 'UNAVAILABLE' | 'BLOCKED' | 'NOT_VERIFIED' | 'WEB_PAGE' | 'AUTH_REQUIRED';
   http_status: number | null;
   response_time_ms: number | null;
   verification_error: string | null;

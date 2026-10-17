@@ -73,10 +73,15 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
+from app.db.session import parse_db_url_and_connect_args
+
+
 async def run_async_migrations() -> None:
-    """Run migrations using the async engine."""
+    """Run migrations using the async engine with NeonDB SSL / connect_args support."""
+    clean_url, connect_args = parse_db_url_and_connect_args(get_url())
     connectable = create_async_engine(
-        get_url(),
+        clean_url,
+        connect_args=connect_args,
         poolclass=pool.NullPool,  # no pooling for migrations
     )
     async with connectable.connect() as connection:

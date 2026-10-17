@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -26,7 +27,7 @@ class EndpointCreate(BaseModel):
     latency_threshold_ms: int = Field(default=2000, ge=100, le=60000)
     enabled: bool = True
     tags: str | None = Field(default=None, max_length=500)
-    project_id: uuid.UUID | None = None
+    project_id: uuid.UUID | str | None = None
 
     @field_validator("url")
     @classmethod
@@ -56,7 +57,7 @@ class EndpointOut(BaseModel):
     """Endpoint representation returned to API callers."""
 
     id: uuid.UUID
-    project_id: uuid.UUID | None
+    project_id: uuid.UUID | str | None = None
     name: str
     description: str | None
     method: str
@@ -83,7 +84,7 @@ class EndpointSummary(BaseModel):
     """Compact endpoint representation for list views."""
 
     id: uuid.UUID
-    project_id: uuid.UUID | None
+    project_id: uuid.UUID | str | None = None
     name: str
     method: str
     url: str
@@ -97,3 +98,59 @@ class EndpointSummary(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ParameterField(BaseModel):
+    name: str
+    in_: str = Field(description="Parameter location: path, query, or header", alias="in")
+    required: bool = False
+    type: str = "string"
+    description: str | None = None
+    default: str | int | float | bool | None = None
+    enum: list[str | int | float] | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class BodyField(BaseModel):
+    name: str
+    type: str = "string"
+    required: bool = False
+    description: str | None = None
+    default: Any = None
+    enum: list[Any] | None = None
+    fields: list[BodyField] = Field(default_factory=list)
+    item_type: str | None = None
+    item_fields: list[BodyField] = Field(default_factory=list)
+
+
+class RequestBodySchema(BaseModel):
+    content_type: str = "application/json"
+    content_types: list[str] = Field(default_factory=lambda: ["application/json"])
+    required: bool = False
+    fields: list[BodyField] = Field(default_factory=list)
+    raw_schema: dict | None = None
+
+
+class EndpointSchemaOut(BaseModel):
+    endpoint_id: uuid.UUID
+    method: str
+    url: str
+    path: str
+    path_parameters: list[ParameterField] = Field(default_factory=list)
+    query_parameters: list[ParameterField] = Field(default_factory=list)
+    headers: list[ParameterField] = Field(default_factory=list)
+    request_body: RequestBodySchema | None = None
+
+
+BodyField.model_rebuild()
+RequestBodySchema.model_rebuild()
+EndpointSchemaOut.model_rebuild()
+
+
+class EndpointCheckRequest(BaseModel):
+    path_params: dict[str, str] | None = None
+    query_params: dict[str, str] | None = None
+    headers: dict[str, str] | None = None
+    body: str | dict | list | int | float | bool | None = None
+    content_type: str | None = None

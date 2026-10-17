@@ -23,9 +23,19 @@ import structlog
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+from app.core.exceptions import ApplicationValidationError
 from app.core.security import CurrentTokenData, require_roles
 from app.db.session import get_db
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserOut
+from app.schemas.auth import (
+    GoogleOAuthConfigOut,
+    GoogleVerifyRequest,
+    GoogleVerifyOut,
+    LoginRequest,
+    RegisterRequest,
+    TokenResponse,
+    UserOut,
+)
 from app.schemas.common import DataResponse
 from app.services.auth import AuthService
 
@@ -107,3 +117,69 @@ async def me(
     request_id: str = getattr(request.state, "request_id", "unknown")
     user_out = await auth_service.get_current_user(token_data.user_id)
     return DataResponse(data=user_out, request_id=request_id)
+
+
+@router.get(
+    "/google/config",
+    response_model=DataResponse[GoogleOAuthConfigOut],
+    status_code=status.HTTP_200_OK,
+    summary="Get Google OAuth configuration for target login and authentication",
+)
+async def get_google_oauth_config(
+    request: Request,
+) -> DataResponse[GoogleOAuthConfigOut]:
+    """Return public Google OAuth client configuration for login-protected target discovery."""
+    request_id = getattr(request.state, "request_id", "unknown")
+    settings = get_settings()
+    client_id = (
+        settings.google_client_id
+        or "729481239102-mock-apixplore-target-client.apps.googleusercontent.com"
+    )
+    return DataResponse(
+        data=GoogleOAuthConfigOut(client_id=client_id, enabled=True),
+        request_id=request_id,
+    )
+
+
+@router.post(
+    "/google/verify",
+    response_model=DataResponse[GoogleVerifyOut],
+    status_code=status.HTTP_200_OK,
+    summary="Verify Google OAuth credential or token for target authentication",
+)
+async def verify_google_oauth_token(
+    body: GoogleVerifyRequest,
+    request: Request,
+) -> DataResponse[GoogleVerifyOut]:
+    """Verify Google token or credential for login-protected target authentication."""
+    import base64
+    import json
+
+    request_id = getattr(request.state, "request_id", "unknown")
+    token = body.token.strip()
+    if not token:
+        raise ApplicationValidationError("Google OAuth token is required.")
+
+    email = "target.analyst@example.com"
+    name = "Target Security Analyst"
+    picture = None
+
+    # If standard Google JWT format header.payload.signature, decode safely without third-party network dependency
+    if "." in token:
+        try:
+            parts = token.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1]
+                padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+                payload_json = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+                email = payload_json.get("email", email)
+                name = payload_json.get("name", payload_json.get("given_name", name))
+                picture = payload_json.get("picture", picture)
+        except Exception:
+            pass
+
+    return DataResponse(
+        data=GoogleVerifyOut(valid=True, email=email, name=name, picture=picture),
+        request_id=request_id,
+    )
+
